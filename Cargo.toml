@@ -7,6 +7,8 @@ edition = "2024"
 anyhow = "1.0.103"
 clap = { version = "4.6.1", features = ["derive"] }
 jiff = { version = "0.2.32", features = ["serde"] }
+nucleo-matcher = "0.3.1"
+ratatui = "0.30.2"
 rayon = "1.12.0"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }

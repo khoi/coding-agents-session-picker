@@ -1,6 +1,6 @@
 # casp — coding agents session picker
 
-Lists local AI coding agent sessions as machine-readable JSON. Built for programmatic consumers (agents, scripts) first; humans get `--format table`.
+Lists local AI coding agent sessions. Machine-readable JSON when piped; an interactive fuzzy picker when run on a terminal.
 
 ## Supported agents
 
@@ -15,22 +15,43 @@ Adding an agent = one module in `src/providers/` implementing `Provider`, one `A
 
 ## Usage
 
+Following the TTY convention: stdout on a terminal → picker; stdout piped/captured → JSON list. `-f` forces list output either way — agents driving a PTY should pass `-f json`.
+
 ```sh
-casp                       # every session, JSON array, newest first
-casp -n 20 -a codex        # 20 most recent Codex threads
-casp --cwd ~/code/myproj   # sessions started in that directory or below
-casp -f table | column -ts $'\t'
-casp -f ndjson | fzf       # pick a session id interactively
+casp                       # terminal: picker · piped: JSON array, newest first
+casp | jq                  # JSON list (stdout is a pipe)
+casp -n 20 -a codex -f table
+casp --cwd ~/code/myproj -f json
+claude --resume (casp -a claude-code)     # pick, then resume
+cd (casp --print cwd)                     # jump to a session's directory
 ```
 
 ```
--f, --format <FORMAT>    json (default) | ndjson | table
+-f, --format <FORMAT>    force list output: json | ndjson | table
 -a, --agent <AGENT>      claude-code, codex, cursor, pi (repeatable or comma-separated)
     --cwd <PATH>         only sessions whose working directory is PATH or inside it
 -n, --limit <N>          at most N sessions, applied after sorting
     --include-archived   include archived Codex threads
     --root <DIR>         resolve agent stores under DIR instead of $HOME
+    --all                picker: start showing all directories, not just the current one
+    --print <FIELD>      picker: what selection prints to stdout: id (default) | path | cwd | json
 ```
+
+## Picker
+
+The picker renders on `/dev/tty`; stdout stays clean and carries only the selected field, so it composes with command substitution. Scoped to the current directory by default.
+
+```
+> sidebar▏
+scope: cwd (~/code/github.com/supabitapp/supaterm) · agent: all
+▶ codex        2h ago   Revamp sidebar projects            khoi/new-tabbar
+  codex        3h ago   We want to do a revamped of how …  khoi/new-tabbar
+  claude-code  5h ago   Build CLI tool to list and resum…  main
+~/code/github.com/supabitapp/supaterm
+12/7382 · ↑↓ move · enter select · tab cwd/all · ctrl-a agent · alt-1..4 solo · esc quit
+```
+
+Keys: type to fuzzy-filter · `↑/↓` or `ctrl-p/n` move · `pgup/pgdn` jump · `tab` toggle current-directory/all scope · `ctrl-a` cycle agent · `alt-1..4` solo one agent · `enter` select · `esc` cancel.
 
 ## Schema
 
@@ -57,6 +78,7 @@ Sorted by `updated_at` descending. Sessions and stderr never mix: data goes to s
 | 0 | complete picture (missing stores and skipped malformed files are normal) |
 | 1 | at least one agent's store failed to read; stdout still holds valid JSON of the rest |
 | 2 | usage error |
+| 130 | picker cancelled (esc/ctrl-c), nothing printed |
 
 ## Notes
 
