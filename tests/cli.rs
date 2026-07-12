@@ -141,7 +141,11 @@ fn codex_rollout_fixture(root: &Path) {
         &root.join(".codex/sessions/2026/07/01/rollout-2026-07-01T10-00-00-cx-scan.jsonl"),
         concat!(
             "{\"timestamp\":\"2026-07-01T10:00:00Z\",\"type\":\"session_meta\",",
-            "\"payload\":{\"id\":\"cx-scan\",\"cwd\":\"/w/three\",\"git\":{\"branch\":\"feat\"}}}",
+            "\"payload\":{\"id\":\"cx-scan\",\"cwd\":\"/w/three\",\"git\":{\"branch\":\"feat\"}}}\n",
+            "{\"timestamp\":\"2026-07-01T10:00:01Z\",\"type\":\"response_item\",",
+            "\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>zsh</environment_context>\"}]}}\n",
+            "{\"timestamp\":\"2026-07-01T10:00:02Z\",\"type\":\"response_item\",",
+            "\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"ship the release\"}]}}",
         ),
         BASE_MS + 5_000,
     );
@@ -288,6 +292,7 @@ fn codex_falls_back_to_rollout_scan_when_db_missing() {
     assert_eq!(sessions[0]["id"], "cx-scan");
     assert_eq!(sessions[0]["cwd"], "/w/three");
     assert_eq!(sessions[0]["branch"], "feat");
+    assert_eq!(sessions[0]["title"], "ship the release");
 }
 
 #[test]

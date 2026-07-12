@@ -114,23 +114,10 @@ fn prompt_text(text: &str) -> Option<String> {
         let command = rest.split("</bash-input>").next().unwrap_or(rest).trim();
         return (!command.is_empty()).then(|| format!("! {command}"));
     }
-    if text.is_empty() || is_preamble(text) {
+    if text.is_empty() || super::is_preamble(text) {
         return None;
     }
     Some(text.to_owned())
-}
-
-fn is_preamble(text: &str) -> bool {
-    if text.starts_with("[Request interrupted by user") {
-        return true;
-    }
-    let mut chars = text.chars();
-    if chars.next() != Some('<') || !chars.next().is_some_and(|c| c.is_ascii_lowercase()) {
-        return false;
-    }
-    chars
-        .find(|c| !(c.is_ascii_alphanumeric() || *c == '_' || *c == '-'))
-        .is_some_and(|c| c == '>' || c.is_whitespace())
 }
 
 fn is_uuid(text: &str) -> bool {

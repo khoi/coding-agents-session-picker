@@ -80,9 +80,22 @@ fn text_blocks(content: &Value) -> Vec<String> {
         Value::String(text) => vec![text.clone()],
         Value::Array(blocks) => blocks
             .iter()
-            .filter(|block| block["type"] == "text")
+            .filter(|block| block["type"] == "text" || block["type"] == "input_text")
             .filter_map(|block| block["text"].as_str().map(str::to_owned))
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn is_preamble(text: &str) -> bool {
+    if text.starts_with("[Request interrupted by user") {
+        return true;
+    }
+    let mut chars = text.chars();
+    if chars.next() != Some('<') || !chars.next().is_some_and(|c| c.is_ascii_lowercase()) {
+        return false;
+    }
+    chars
+        .find(|c| !(c.is_ascii_alphanumeric() || *c == '_' || *c == '-'))
+        .is_some_and(|c| c == '>' || c.is_whitespace())
 }
