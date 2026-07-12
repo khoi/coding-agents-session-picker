@@ -78,14 +78,34 @@ fn title(head: &str, tail: &str) -> Option<String> {
 }
 
 fn first_prompt(head: &str) -> Option<String> {
-    head.lines()
+    let mut command = None;
+    let prompt = head
+        .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .filter(|entry| {
             entry["type"] == "user" && entry["isMeta"] != true && entry["isCompactSummary"] != true
         })
         .flat_map(|entry| super::text_blocks(&entry["message"]["content"]))
-        .find_map(|text| prompt_text(&text))
-        .map(|text| truncate_chars(&text, 200))
+        .find_map(|text| {
+            if command.is_none() {
+                command = command_text(&text);
+            }
+            prompt_text(&text)
+        });
+    prompt.or(command).map(|text| truncate_chars(&text, 200))
+}
+
+fn command_text(text: &str) -> Option<String> {
+    let name = text.split_once("<command-name>")?.1.split("</command-name>").next()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let args = text
+        .split_once("<command-args>")
+        .and_then(|(_, rest)| rest.split("</command-args>").next())
+        .unwrap_or_default()
+        .trim();
+    Some(if args.is_empty() { name.to_owned() } else { format!("{name} {args}") })
 }
 
 fn prompt_text(text: &str) -> Option<String> {
@@ -196,6 +216,18 @@ mod tests {
         ];
         let path = write_session(dir.path(), &lines);
         assert_eq!(read_session(&path).unwrap().title.as_deref(), Some("! cargo test"));
+    }
+
+    #[test]
+    fn slash_command_is_title_fallback_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let command = user_line("<command-name>/review</command-name><command-args>src/main.rs</command-args>");
+        let command_only = write_session(dir.path(), std::slice::from_ref(&command));
+        assert_eq!(read_session(&command_only).unwrap().title.as_deref(), Some("/review src/main.rs"));
+        fs::remove_file(&command_only).unwrap();
+
+        let with_prompt = write_session(dir.path(), &[command, user_line("real prompt wins")]);
+        assert_eq!(read_session(&with_prompt).unwrap().title.as_deref(), Some("real prompt wins"));
     }
 
     #[test]
