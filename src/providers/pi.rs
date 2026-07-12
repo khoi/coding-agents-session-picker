@@ -1,4 +1,4 @@
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -56,6 +56,8 @@ fn read_session(path: &Path) -> Option<Session> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     fn write_session(dir: &Path, name: &str, lines: &[&str]) -> PathBuf {
