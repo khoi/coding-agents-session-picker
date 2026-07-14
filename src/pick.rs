@@ -2,22 +2,24 @@ use std::fs::{File, OpenOptions};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::ValueEnum;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
-use ratatui::Terminal;
-use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, read};
+use ratatui::crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::CrosstermBackend;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::Terminal;
+use terminal_colorsaurus::{background_color, QueryOptions};
 
 use crate::conversation::{self, Message};
 use crate::session::{Agent, Session};
@@ -60,6 +62,7 @@ struct TableView {
     compact: bool,
     selected: usize,
     sort: Sort,
+    background: Option<(u8, u8, u8)>,
 }
 
 pub fn run(
@@ -73,10 +76,11 @@ pub fn run(
         .write(true)
         .open("/dev/tty")
         .context("opening /dev/tty")?;
+    let background = terminal_background();
     enable_raw_mode()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(&tty))?;
     execute!(&tty, EnterAlternateScreen)?;
-    let picked = event_loop(&mut terminal, sessions, scope, scoped, limit);
+    let picked = event_loop(&mut terminal, sessions, scope, scoped, limit, background);
     execute!(&tty, LeaveAlternateScreen)?;
     disable_raw_mode()?;
     picked
@@ -134,6 +138,7 @@ fn event_loop(
     scope: &Path,
     scoped: bool,
     limit: Option<usize>,
+    background: Option<(u8, u8, u8)>,
 ) -> anyhow::Result<Option<usize>> {
     let mut matcher = Matcher::new(Config::DEFAULT);
     let mut state = State {
@@ -157,7 +162,7 @@ fn event_loop(
             }
             preview_dirty = false;
         }
-        terminal.draw(|frame| draw(frame, sessions, &state, &rows))?;
+        terminal.draw(|frame| draw(frame, sessions, &state, &rows, background))?;
         let Event::Key(key) = read()? else { continue };
         if key.kind != KeyEventKind::Press {
             continue;
@@ -407,7 +412,13 @@ fn in_scope(session: &Session, scope: &Path) -> bool {
         .is_some_and(|cwd| Path::new(cwd).starts_with(scope))
 }
 
-fn draw(frame: &mut ratatui::Frame, sessions: &[Session], state: &State, rows: &[usize]) {
+fn draw(
+    frame: &mut ratatui::Frame,
+    sessions: &[Session],
+    state: &State,
+    rows: &[usize],
+    background: Option<(u8, u8, u8)>,
+) {
     let [input, status, list, detail, hints] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
@@ -437,6 +448,7 @@ fn draw(frame: &mut ratatui::Frame, sessions: &[Session], state: &State, rows: &
                 compact: true,
                 selected: state.selected,
                 sort: state.sort,
+                background,
             },
         );
         draw_preview(frame, conversation, preview);
@@ -451,6 +463,7 @@ fn draw(frame: &mut ratatui::Frame, sessions: &[Session], state: &State, rows: &
                 compact: false,
                 selected: state.selected,
                 sort: state.sort,
+                background,
             },
         );
     }
@@ -595,22 +608,54 @@ fn draw_table(
                 cells.insert(2, session.branch.clone().unwrap_or_default());
             }
             let row = Row::new(cells);
-            if position % 2 == 0 {
-                row.style(Style::new().add_modifier(Modifier::DIM))
-            } else {
-                row
+            match (
+                position != view.selected && position % 2 == 0,
+                view.background,
+            ) {
+                (true, Some(background)) => row.style(zebra_style(background)),
+                _ => row,
             }
         }),
         widths,
     )
-    .row_highlight_style(
-        Style::new()
-            .remove_modifier(Modifier::DIM)
-            .add_modifier(Modifier::REVERSED),
-    )
+    .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
     .highlight_symbol("▶ ");
     let mut state = TableState::default().with_selected(Some(view.selected));
     frame.render_stateful_widget(table, area, &mut state);
+}
+
+fn terminal_background() -> Option<(u8, u8, u8)> {
+    let mut options = QueryOptions::default();
+    options.timeout = Duration::from_millis(100);
+    background_color(options)
+        .ok()
+        .map(|color| color.scale_to_8bit())
+}
+
+fn zebra_style(background: (u8, u8, u8)) -> Style {
+    let overlay = if is_light(background) {
+        (0, 0, 0)
+    } else {
+        (255, 255, 255)
+    };
+    let alpha = if is_light(background) { 0.04 } else { 0.055 };
+    let (r, g, b) = blend(overlay, background, alpha);
+    Style::new().bg(Color::Rgb(r, g, b))
+}
+
+fn is_light((r, g, b): (u8, u8, u8)) -> bool {
+    0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b) > 128.0
+}
+
+fn blend(foreground: (u8, u8, u8), background: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
+    let channel = |foreground: u8, background: u8| {
+        (f32::from(foreground) * alpha + f32::from(background) * (1.0 - alpha)) as u8
+    };
+    (
+        channel(foreground.0, background.0),
+        channel(foreground.1, background.1),
+        channel(foreground.2, background.2),
+    )
 }
 
 fn table_agent(agent: Agent) -> String {
@@ -623,10 +668,8 @@ fn table_agent(agent: Agent) -> String {
 fn draw_preview(frame: &mut ratatui::Frame, area: Rect, preview: &Result<Vec<Message>, String>) {
     let lines = match preview {
         Ok(messages) if messages.is_empty() => {
-            vec![
-                Line::from("No conversation available")
-                    .style(Style::new().add_modifier(Modifier::DIM)),
-            ]
+            vec![Line::from("No conversation available")
+                .style(Style::new().add_modifier(Modifier::DIM))]
         }
         Ok(messages) => messages
             .iter()
@@ -813,6 +856,7 @@ mod tests {
                         compact: false,
                         selected: 0,
                         sort: Sort::Updated,
+                        background: None,
                     },
                 )
             })
@@ -845,6 +889,7 @@ mod tests {
                         compact: false,
                         selected: 0,
                         sort: Sort::Updated,
+                        background: None,
                     },
                 )
             })
@@ -878,8 +923,9 @@ mod tests {
     }
 
     #[test]
-    fn table_stripes_unselected_rows_and_undims_selection() {
+    fn table_stripes_unselected_rows_across_the_full_width() {
         let sessions = fixtures();
+        let background = (20, 20, 20);
         let mut terminal = Terminal::new(TestBackend::new(60, 3)).unwrap();
         terminal
             .draw(|frame| {
@@ -893,15 +939,28 @@ mod tests {
                         compact: false,
                         selected: 1,
                         sort: Sort::Updated,
+                        background: Some(background),
                     },
                 )
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert!(buffer[(10, 0)].modifier.contains(Modifier::DIM));
+        let stripe = zebra_style(background).bg.unwrap();
+        assert_eq!(buffer[(10, 0)].bg, stripe);
+        assert_eq!(buffer[(59, 0)].bg, stripe);
         assert!(buffer[(10, 1)].modifier.contains(Modifier::REVERSED));
-        assert!(!buffer[(10, 1)].modifier.contains(Modifier::DIM));
-        assert!(buffer[(10, 2)].modifier.contains(Modifier::DIM));
+        assert_eq!(buffer[(10, 1)].bg, Color::Reset);
+        assert_eq!(buffer[(10, 2)].bg, stripe);
+        assert_eq!(buffer[(59, 2)].bg, stripe);
+    }
+
+    #[test]
+    fn zebra_style_adapts_to_terminal_background() {
+        assert_eq!(zebra_style((20, 20, 20)).bg, Some(Color::Rgb(32, 32, 32)));
+        assert_eq!(
+            zebra_style((240, 240, 240)).bg,
+            Some(Color::Rgb(230, 230, 230))
+        );
     }
 
     #[test]
@@ -920,6 +979,7 @@ mod tests {
                         compact: false,
                         selected: 0,
                         sort: Sort::Created,
+                        background: None,
                     },
                 )
             })
@@ -1021,7 +1081,7 @@ mod tests {
         }]));
         let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
         terminal
-            .draw(|frame| draw(frame, &sessions, &state, &rows))
+            .draw(|frame| draw(frame, &sessions, &state, &rows, None))
             .unwrap();
         let rendered: String = terminal
             .backend()
@@ -1045,7 +1105,7 @@ mod tests {
         ]));
         let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
         terminal
-            .draw(|frame| draw(frame, &sessions, &state, &rows))
+            .draw(|frame| draw(frame, &sessions, &state, &rows, None))
             .unwrap();
         let rendered: String = terminal
             .backend()
