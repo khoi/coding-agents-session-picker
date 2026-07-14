@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
@@ -9,8 +9,8 @@ use serde_json::Value;
 use crate::session::{Agent, Session, truncate_chars};
 
 const WINDOW: u64 = 2 * 1024 * 1024;
-const LINE_LIMIT: usize = 6;
-const LINE_CHARS: usize = 500;
+const MESSAGE_LIMIT: usize = 6;
+const MESSAGE_CHARS: usize = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Speaker {
@@ -57,7 +57,7 @@ pub(crate) fn load(session: &Session) -> anyhow::Result<Vec<Message>> {
         Agent::Cursor => entries.iter().filter_map(cursor_message).collect(),
         Agent::Pi => graph_messages(Graph::Pi, &entries),
     };
-    Ok(recent_lines(messages))
+    Ok(recent_messages(messages))
 }
 
 fn entries(path: &Path) -> anyhow::Result<Vec<Value>> {
@@ -278,29 +278,38 @@ fn visible(speaker: Speaker, text: String) -> Option<Message> {
     })
 }
 
-fn recent_lines(messages: Vec<Message>) -> Vec<Message> {
-    let mut lines = VecDeque::with_capacity(LINE_LIMIT);
-    for message in messages {
-        for text in message
-            .text
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-        {
-            let line = Message {
-                speaker: message.speaker,
-                text: truncate_chars(text, LINE_CHARS),
-            };
-            if lines.back() == Some(&line) {
-                continue;
+fn recent_messages(messages: Vec<Message>) -> Vec<Message> {
+    let mut messages: Vec<_> = messages
+        .into_iter()
+        .filter_map(|mut message| {
+            let text = message
+                .text
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if text.is_empty() {
+                return None;
             }
-            if lines.len() == LINE_LIMIT {
-                lines.pop_front();
-            }
-            lines.push_back(line);
-        }
+            message.text = truncate_chars(&text, MESSAGE_CHARS);
+            Some(message)
+        })
+        .collect();
+    messages.dedup();
+    let start = messages.len().saturating_sub(MESSAGE_LIMIT);
+    let mut recent = messages.split_off(start);
+    if !recent
+        .iter()
+        .any(|message| message.speaker == Speaker::User)
+        && let Some(user) = messages
+            .into_iter()
+            .rfind(|message| message.speaker == Speaker::User)
+        && let Some(first) = recent.first_mut()
+    {
+        *first = user;
     }
-    lines.into()
+    recent
 }
 
 pub(crate) fn text_blocks(content: &Value) -> Vec<String> {
@@ -434,14 +443,40 @@ mod tests {
     }
 
     #[test]
-    fn keeps_only_six_recent_nonempty_lines() {
-        let messages = vec![Message {
-            speaker: Speaker::Agent,
-            text: "one\ntwo\n\nthree\nfour\nfive\nsix\nseven".into(),
-        }];
+    fn keeps_recent_messages_and_latest_user_context() {
+        let messages = vec![
+            Message {
+                speaker: Speaker::User,
+                text: "prompt".into(),
+            },
+            Message {
+                speaker: Speaker::Agent,
+                text: "one".into(),
+            },
+            Message {
+                speaker: Speaker::Agent,
+                text: "two".into(),
+            },
+            Message {
+                speaker: Speaker::Agent,
+                text: "three".into(),
+            },
+            Message {
+                speaker: Speaker::Agent,
+                text: "four".into(),
+            },
+            Message {
+                speaker: Speaker::Agent,
+                text: "five".into(),
+            },
+            Message {
+                speaker: Speaker::Agent,
+                text: "six\ncontinued".into(),
+            },
+        ];
         assert_eq!(
-            texts(&recent_lines(messages)),
-            ["two", "three", "four", "five", "six", "seven"]
+            texts(&recent_messages(messages)),
+            ["prompt", "two", "three", "four", "five", "six continued"]
         );
     }
 }
