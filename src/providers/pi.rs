@@ -2,10 +2,10 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use rayon::prelude::*;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::cache::Cache;
 use crate::conversation::text_blocks;
 use crate::session::{Agent, Session, none_if_empty, truncate_chars};
 
@@ -24,9 +24,8 @@ impl super::Provider for Pi {
         Agent::Pi
     }
 
-    fn sessions(&self) -> anyhow::Result<Vec<Session>> {
-        let files = super::jsonl_files(&self.sessions)?;
-        Ok(files.par_iter().filter_map(|path| read_session(path)).collect())
+    fn sessions(&self, cache: &Cache) -> anyhow::Result<Vec<Session>> {
+        Ok(cache.sessions(super::jsonl_files(&self.sessions)?, read_session))
     }
 }
 

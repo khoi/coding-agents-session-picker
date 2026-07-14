@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use crate::cache::Cache;
 use crate::session::{Agent, Session};
 
 mod claude;
@@ -11,7 +12,7 @@ mod pi;
 
 pub trait Provider: Send + Sync {
     fn agent(&self) -> Agent;
-    fn sessions(&self) -> anyhow::Result<Vec<Session>>;
+    fn sessions(&self, cache: &Cache) -> anyhow::Result<Vec<Session>>;
 }
 
 pub fn all(root: Option<&Path>, include_archived: bool) -> Vec<Box<dyn Provider>> {

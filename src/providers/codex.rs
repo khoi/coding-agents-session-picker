@@ -9,6 +9,7 @@ use rayon::prelude::*;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
+use crate::cache::Cache;
 use crate::conversation::{is_preamble, text_blocks};
 use crate::session::{Agent, Session, none_if_empty, truncate_chars};
 
@@ -24,16 +25,16 @@ impl super::Provider for Codex {
         Agent::Codex
     }
 
-    fn sessions(&self) -> anyhow::Result<Vec<Session>> {
+    fn sessions(&self, cache: &Cache) -> anyhow::Result<Vec<Session>> {
         let titles = index_titles(&self.home.join("session_index.jsonl"));
         let db = self.home.join("state_5.sqlite");
         if db.exists() {
-            match query_threads(&db, self.include_archived, &titles) {
+            match query_threads(&db, self.include_archived, &titles, cache) {
                 Ok(sessions) => return Ok(sessions),
                 Err(err) => eprintln!("{}: codex: {err:#}; falling back to rollout scan", env!("CARGO_BIN_NAME")),
             }
         }
-        self.scan_rollouts(&titles)
+        self.scan_rollouts(&titles, cache)
     }
 }
 
@@ -56,6 +57,7 @@ fn query_threads(
     db: &Path,
     include_archived: bool,
     titles: &HashMap<String, String>,
+    cache: &Cache,
 ) -> anyhow::Result<Vec<Session>> {
     let conn = Connection::open_with_flags(
         db,
@@ -108,7 +110,7 @@ fn query_threads(
             session.title = session
                 .path
                 .as_deref()
-                .and_then(|path| first_user_prompt(Path::new(path)));
+                .and_then(|path| cache.title(Path::new(path), first_user_prompt));
         });
     Ok(sessions)
 }
@@ -150,19 +152,22 @@ fn to_timestamp(ms: Option<i64>, seconds: Option<i64>) -> Option<jiff::Timestamp
 }
 
 impl Codex {
-    fn scan_rollouts(&self, titles: &HashMap<String, String>) -> anyhow::Result<Vec<Session>> {
+    fn scan_rollouts(&self, titles: &HashMap<String, String>, cache: &Cache) -> anyhow::Result<Vec<Session>> {
         let mut files = super::jsonl_files(&self.home.join("sessions"))?;
         if self.include_archived {
             files.extend(super::jsonl_files(&self.home.join("archived_sessions"))?);
         }
-        Ok(files
-            .par_iter()
-            .filter_map(|path| read_rollout(path, titles))
-            .collect())
+        let mut sessions = cache.sessions(files, read_rollout);
+        for session in &mut sessions {
+            if let Some(name) = titles.get(&session.id) {
+                session.title = Some(name.clone());
+            }
+        }
+        Ok(sessions)
     }
 }
 
-fn read_rollout(path: &Path, titles: &HashMap<String, String>) -> Option<Session> {
+fn read_rollout(path: &Path) -> Option<Session> {
     let updated_at = super::modified_at(path)?;
     let mut meta = None;
     let mut prompt = None;
@@ -192,7 +197,7 @@ fn read_rollout(path: &Path, titles: &HashMap<String, String>) -> Option<Session
     Some(Session {
         agent: Agent::Codex,
         id: id.to_owned(),
-        title: titles.get(id).cloned().or(prompt),
+        title: prompt,
         cwd: none_if_empty(payload["cwd"].as_str().map(str::to_owned)),
         branch: none_if_empty(payload["git"]["branch"].as_str().map(str::to_owned)),
         updated_at,
@@ -248,7 +253,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let session = read_rollout(&path, &HashMap::new()).unwrap();
+        let session = read_rollout(&path).unwrap();
         assert_eq!(session.id, "legacy-id");
         assert_eq!(session.cwd.as_deref(), Some("/w"));
         assert_eq!(session.branch, None);
@@ -270,7 +275,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let session = read_rollout(&path, &HashMap::new()).unwrap();
+        let session = read_rollout(&path).unwrap();
         assert_eq!(session.title.as_deref(), Some("fix the sidebar"));
     }
 
@@ -289,9 +294,10 @@ mod tests {
     }
 
     #[test]
-    fn rollout_meta_found_within_first_lines_with_git_branch() {
+    fn scan_overlays_index_titles_onto_rollout_meta() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rollout-2026-07-01T10-00-00-def.jsonl");
+        let path = dir.path().join("sessions/rollout-2026-07-01T10-00-00-def.jsonl");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
             concat!(
@@ -301,10 +307,14 @@ mod tests {
             ),
         )
         .unwrap();
+        let codex = Codex {
+            home: dir.path().to_path_buf(),
+            include_archived: false,
+        };
         let titles = HashMap::from([("new-id".to_owned(), "renamed".to_owned())]);
-        let session = read_rollout(&path, &titles).unwrap();
-        assert_eq!(session.id, "new-id");
-        assert_eq!(session.branch.as_deref(), Some("main"));
-        assert_eq!(session.title.as_deref(), Some("renamed"));
+        let sessions = codex.scan_rollouts(&titles, &Cache::load(None)).unwrap();
+        assert_eq!(sessions[0].id, "new-id");
+        assert_eq!(sessions[0].branch.as_deref(), Some("main"));
+        assert_eq!(sessions[0].title.as_deref(), Some("renamed"));
     }
 }

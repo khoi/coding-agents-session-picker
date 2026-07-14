@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::Context;
 use rusqlite::{Connection, OpenFlags};
 
+use crate::cache::Cache;
 use crate::session::{Agent, Session, none_if_empty};
 
 pub struct Cursor {
@@ -25,7 +26,7 @@ impl super::Provider for Cursor {
         Agent::Cursor
     }
 
-    fn sessions(&self) -> anyhow::Result<Vec<Session>> {
+    fn sessions(&self, _cache: &Cache) -> anyhow::Result<Vec<Session>> {
         if !self.db.exists() {
             return Ok(Vec::new());
         }

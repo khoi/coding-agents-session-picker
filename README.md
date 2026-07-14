@@ -27,3 +27,5 @@ cd (ap pick --print cwd)               # jump to a session's directory
 ap -f json | jq '.[0]'                 # all sessions as JSON, newest first
 ap -a codex -n 20 -f table             # 20 latest Codex threads as a table
 ```
+
+Session metadata is cached in `~/.cache/ap/sessions.json` (honors `XDG_CACHE_HOME`); only new or changed transcripts are re-parsed. Delete the file to force a full rescan.
