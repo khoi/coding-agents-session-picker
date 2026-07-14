@@ -66,10 +66,10 @@ fn query_threads(
     .with_context(|| format!("opening {}", db.display()))?;
     conn.busy_timeout(Duration::from_secs(1))?;
     let mut sql = String::from(
-        "SELECT id, rollout_path, cwd, title, first_user_message, preview, git_branch, created_at, updated_at, created_at_ms, updated_at_ms FROM threads",
+        "SELECT id, rollout_path, cwd, title, first_user_message, preview, git_branch, created_at, updated_at, created_at_ms, updated_at_ms FROM threads WHERE COALESCE(thread_source, '') <> 'subagent'",
     );
     if !include_archived {
-        sql.push_str(" WHERE archived = 0");
+        sql.push_str(" AND archived = 0");
     }
     let mut statement = conn.prepare(&sql).context("querying threads")?;
     let mut sessions: Vec<Session> = statement
@@ -200,6 +200,9 @@ fn read_rollout(path: &Path) -> Option<Session> {
         }
     }
     let payload = meta?;
+    if payload["source"].get("subagent").is_some() {
+        return None;
+    }
     let id = payload["id"].as_str().or_else(|| payload["session_id"].as_str())?;
     Some(Session {
         agent: Agent::Codex,

@@ -97,14 +97,14 @@ fn codex_db_fixture(root: &Path) {
             id TEXT PRIMARY KEY, rollout_path TEXT, cwd TEXT, title TEXT,
             first_user_message TEXT, preview TEXT, git_branch TEXT,
             created_at INTEGER, updated_at INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER,
-            archived INTEGER NOT NULL DEFAULT 0
+            thread_source TEXT, archived INTEGER NOT NULL DEFAULT 0
         )",
     )
     .unwrap();
     let mut insert = conn
         .prepare(
-            "INSERT INTO threads (id, rollout_path, cwd, title, first_user_message, preview, git_branch, created_at_ms, updated_at, updated_at_ms, archived)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO threads (id, rollout_path, cwd, title, first_user_message, preview, git_branch, created_at_ms, updated_at, updated_at_ms, thread_source, archived)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )
         .unwrap();
     insert
@@ -119,6 +119,7 @@ fn codex_db_fixture(root: &Path) {
             BASE_MS + 10_000,
             (BASE_MS + 40_000) / 1000,
             BASE_MS + 40_000,
+            "user",
             0,
         ])
         .unwrap();
@@ -134,6 +135,7 @@ fn codex_db_fixture(root: &Path) {
             BASE_MS + 15_000,
             (BASE_MS + 30_000) / 1000,
             None::<i64>,
+            "user",
             0,
         ])
         .unwrap();
@@ -149,7 +151,24 @@ fn codex_db_fixture(root: &Path) {
             BASE_MS,
             (BASE_MS + 50_000) / 1000,
             BASE_MS + 50_000,
+            "user",
             1,
+        ])
+        .unwrap();
+    insert
+        .execute(rusqlite::params![
+            "cx-subagent",
+            "/r/subagent.jsonl",
+            "/w/one",
+            "Fix tab groups",
+            "",
+            "",
+            "main",
+            BASE_MS + 20_000,
+            (BASE_MS + 60_000) / 1000,
+            BASE_MS + 60_000,
+            "subagent",
+            0,
         ])
         .unwrap();
 }
@@ -166,6 +185,17 @@ fn codex_rollout_fixture(root: &Path) {
             "\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"ship the release\"}]}}",
         ),
         BASE_MS + 5_000,
+    );
+    write_at(
+        &root.join(".codex/sessions/2026/07/01/rollout-2026-07-01T10-00-01-cx-subagent.jsonl"),
+        concat!(
+            "{\"timestamp\":\"2026-07-01T10:00:01Z\",\"type\":\"session_meta\",",
+            "\"payload\":{\"id\":\"cx-subagent\",\"cwd\":\"/w/three\",\"timestamp\":\"2026-07-01T10:00:01Z\",",
+            "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"cx-scan\"}}}}}\n",
+            "{\"timestamp\":\"2026-07-01T10:00:02Z\",\"type\":\"response_item\",",
+            "\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"ship the release\"}]}}",
+        ),
+        BASE_MS + 6_000,
     );
 }
 
@@ -317,6 +347,7 @@ fn codex_falls_back_to_rollout_scan_when_db_missing() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stderr_text(&output), "");
     let sessions = stdout_json(&output);
+    assert_eq!(sessions.as_array().unwrap().len(), 1);
     assert_eq!(sessions[0]["id"], "cx-scan");
     assert_eq!(sessions[0]["cwd"], "/w/three");
     assert_eq!(sessions[0]["branch"], "feat");
