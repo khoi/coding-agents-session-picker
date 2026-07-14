@@ -403,14 +403,14 @@ fn draw_table(
 ) {
     let widths = if compact {
         vec![
-            Constraint::Length(6),
             Constraint::Length(7),
+            Constraint::Length(6),
             Constraint::Min(10),
         ]
     } else {
         vec![
-            Constraint::Length(6),
             Constraint::Length(7),
+            Constraint::Length(6),
             Constraint::Min(20),
             Constraint::Length(18),
         ]
@@ -419,8 +419,8 @@ fn draw_table(
         rows.iter().map(|&index| {
             let session = &sessions[index];
             let mut cells = vec![
-                table_agent(session.agent),
                 relative(now, session.updated_at),
+                table_agent(session.agent),
                 session.title.clone().unwrap_or_default(),
             ];
             if !compact {
@@ -577,6 +577,33 @@ mod tests {
     fn table_shortens_claude_code() {
         assert_eq!(table_agent(Agent::ClaudeCode), "claude");
         assert_eq!(table_agent(Agent::Codex), "codex");
+    }
+
+    #[test]
+    fn table_starts_with_relative_date() {
+        let sessions = fixtures();
+        let mut terminal = Terminal::new(TestBackend::new(60, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_table(
+                    frame,
+                    &sessions,
+                    &[0],
+                    "2026-07-12T00:00:00Z".parse().unwrap(),
+                    frame.area(),
+                    false,
+                    0,
+                )
+            })
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.starts_with("▶ 1w ago"));
     }
 
     #[test]
