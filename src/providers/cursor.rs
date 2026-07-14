@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use anyhow::Context;
 use rusqlite::{Connection, OpenFlags};
-use serde::Deserialize;
 
 use crate::session::{Agent, Session, none_if_empty};
 
@@ -14,15 +13,10 @@ pub struct Cursor {
     pub projects: PathBuf,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct ComposerData {
     composer_id: String,
-    #[serde(default)]
     name: Option<String>,
-    #[serde(default)]
     created_at: Option<i64>,
-    #[serde(default)]
     last_updated_at: Option<i64>,
 }
 
@@ -43,19 +37,33 @@ impl super::Provider for Cursor {
         )
         .with_context(|| format!("opening {}", self.db.display()))?;
         conn.busy_timeout(Duration::from_secs(1))?;
+        // json_extract lets sqlite pull just the fields we need out of each
+        // composerData row without ever materializing the full conversation
+        // blob (which can run into the megabytes) on the Rust side.
+        // `key >= ... AND key < ...` (rather than `LIKE 'composerData:%'`) lets
+        // sqlite use the unique index on `key` to seek straight to the matching
+        // rows instead of scanning the whole table, which can hold hundreds of
+        // thousands of unrelated keys.
         let mut statement = conn
-            .prepare("SELECT value FROM cursorDiskKV WHERE key LIKE 'composerData:%'")
+            .prepare(
+                "SELECT json_extract(value, '$.composerId'), \
+                        json_extract(value, '$.name'), \
+                        json_extract(value, '$.createdAt'), \
+                        json_extract(value, '$.lastUpdatedAt') \
+                 FROM cursorDiskKV WHERE key >= 'composerData:' AND key < 'composerData;'",
+            )
             .context("querying composerData")?;
         let sessions = statement
-            .query_map([], |row| row.get::<_, rusqlite::types::Value>(0))
+            .query_map([], |row| {
+                Ok(ComposerData {
+                    composer_id: row.get(0)?,
+                    name: row.get(1)?,
+                    created_at: row.get(2)?,
+                    last_updated_at: row.get(3)?,
+                })
+            })
             .context("querying composerData")?
             .filter_map(Result::ok)
-            .filter_map(|value| match value {
-                rusqlite::types::Value::Text(text) => Some(text.into_bytes()),
-                rusqlite::types::Value::Blob(bytes) => Some(bytes),
-                _ => None,
-            })
-            .filter_map(|value| serde_json::from_slice::<ComposerData>(&value).ok())
             .filter_map(|composer| {
                 let transcript = transcripts.get(&composer.composer_id);
                 let cwd = transcript.map(|(encoded, _)| {
@@ -149,6 +157,7 @@ fn search(path: &mut String, segments: &[&str], visits: &mut usize) -> Option<St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::Provider;
 
     fn encode(path: &Path) -> String {
         path.to_str()
@@ -173,5 +182,40 @@ mod tests {
         assert_eq!(decode("empty-window"), None);
         assert_eq!(decode("1783374428344"), None);
         assert_eq!(decode(""), None);
+    }
+
+    #[test]
+    fn sessions_reads_composer_data_and_skips_unrelated_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.vscdb");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute("CREATE TABLE cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+            (
+                "composerData:keep",
+                r#"{"composerId":"keep","name":"kept session","createdAt":1700000000000}"#,
+            ),
+        )
+        .unwrap();
+        // a key that shares the prefix textually but sorts past the upper bound
+        // must not be picked up by the `key < 'composerData;'` range scan.
+        conn.execute(
+            "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+            ("composerDataX:decoy", r#"{"composerId":"decoy","createdAt":1700000000000}"#),
+        )
+        .unwrap();
+        conn.execute("INSERT INTO cursorDiskKV (key, value) VALUES ('composerData:tombstone', NULL)", [])
+            .unwrap();
+        conn.execute("INSERT INTO cursorDiskKV (key, value) VALUES ('unrelated:row', 'nope')", [])
+            .unwrap();
+        drop(conn);
+
+        let cursor = Cursor { db, projects: dir.path().join("projects") };
+        let sessions = cursor.sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "keep");
+        assert_eq!(sessions[0].title.as_deref(), Some("kept session"));
     }
 }
