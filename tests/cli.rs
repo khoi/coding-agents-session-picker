@@ -67,7 +67,7 @@ fn claude_fixture(root: &Path) {
         BASE_MS + 35_000,
     );
     let user_b = format!(
-        r#"{{"type":"user","sessionId":"{CLAUDE_B}","cwd":"/w/one/sub","gitBranch":"","message":{{"role":"user","content":"hello from B"}}}}"#
+        r#"{{"type":"user","sessionId":"{CLAUDE_B}","cwd":"/w/one/sub","gitBranch":"","timestamp":"2026-06-02T00:00:00Z","message":{{"role":"user","content":"hello from B"}}}}"#
     );
     write_at(
         &root.join(format!(".claude/projects/-w-one-sub/{CLAUDE_B}.jsonl")),
@@ -103,8 +103,8 @@ fn codex_db_fixture(root: &Path) {
     .unwrap();
     let mut insert = conn
         .prepare(
-            "INSERT INTO threads (id, rollout_path, cwd, title, first_user_message, preview, git_branch, updated_at, updated_at_ms, archived)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO threads (id, rollout_path, cwd, title, first_user_message, preview, git_branch, created_at_ms, updated_at, updated_at_ms, archived)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )
         .unwrap();
     insert
@@ -116,6 +116,7 @@ fn codex_db_fixture(root: &Path) {
             "",
             "",
             "main",
+            BASE_MS + 10_000,
             (BASE_MS + 40_000) / 1000,
             BASE_MS + 40_000,
             0,
@@ -130,6 +131,7 @@ fn codex_db_fixture(root: &Path) {
             "explore the API",
             "",
             None::<String>,
+            BASE_MS + 15_000,
             (BASE_MS + 30_000) / 1000,
             None::<i64>,
             0,
@@ -144,6 +146,7 @@ fn codex_db_fixture(root: &Path) {
             "",
             "",
             None::<String>,
+            BASE_MS,
             (BASE_MS + 50_000) / 1000,
             BASE_MS + 50_000,
             1,
@@ -156,7 +159,7 @@ fn codex_rollout_fixture(root: &Path) {
         &root.join(".codex/sessions/2026/07/01/rollout-2026-07-01T10-00-00-cx-scan.jsonl"),
         concat!(
             "{\"timestamp\":\"2026-07-01T10:00:00Z\",\"type\":\"session_meta\",",
-            "\"payload\":{\"id\":\"cx-scan\",\"cwd\":\"/w/three\",\"git\":{\"branch\":\"feat\"}}}\n",
+            "\"payload\":{\"id\":\"cx-scan\",\"cwd\":\"/w/three\",\"timestamp\":\"2026-07-01T09:59:00Z\",\"git\":{\"branch\":\"feat\"}}}\n",
             "{\"timestamp\":\"2026-07-01T10:00:01Z\",\"type\":\"response_item\",",
             "\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>zsh</environment_context>\"}]}}\n",
             "{\"timestamp\":\"2026-07-01T10:00:02Z\",\"type\":\"response_item\",",
@@ -234,7 +237,7 @@ fn lists_all_agents_sorted_desc_with_full_schema() {
     assert_eq!(ids, ["cx-recent", CLAUDE_A, "cx-seconds", CLAUDE_B, "cu-1", "pi-1"]);
     for session in sessions.as_array().unwrap() {
         let keys: Vec<_> = session.as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(keys, ["agent", "branch", "cwd", "id", "path", "title", "updated_at"]);
+        assert_eq!(keys, ["agent", "branch", "created_at", "cwd", "id", "path", "title", "updated_at"]);
     }
     assert_eq!(sessions[0]["title"], "Fix tab groups");
     assert_eq!(sessions[1]["title"], "Claude session A");
@@ -245,6 +248,7 @@ fn lists_all_agents_sorted_desc_with_full_schema() {
     assert_eq!(sessions[4]["title"], "Sidebar chat");
     assert_eq!(sessions[4]["cwd"], Value::String(cursor_cwd));
     assert_eq!(sessions[5]["title"], "pi prompt");
+    assert_eq!(sessions[0]["created_at"], "2026-05-28T20:26:50Z");
     assert_eq!(sessions[0]["updated_at"], "2026-05-28T20:27:20Z");
     assert_eq!(sessions[2]["updated_at"], "2026-05-28T20:27:10Z");
 }
@@ -317,6 +321,7 @@ fn codex_falls_back_to_rollout_scan_when_db_missing() {
     assert_eq!(sessions[0]["cwd"], "/w/three");
     assert_eq!(sessions[0]["branch"], "feat");
     assert_eq!(sessions[0]["title"], "ship the release");
+    assert_eq!(sessions[0]["created_at"], "2026-07-01T09:59:00Z");
 }
 
 #[test]

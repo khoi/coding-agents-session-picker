@@ -57,6 +57,7 @@ mod tests {
             title: Some("line one\nline\ttwo".into()),
             cwd: Some("/w".into()),
             branch: None,
+            created_at: "2026-01-01T01:02:03Z".parse().unwrap(),
             updated_at: "2026-01-02T03:04:05Z".parse().unwrap(),
             path: None,
         }]
@@ -73,8 +74,9 @@ mod tests {
         let value: Value = serde_json::from_str(&rendered(Format::Json)).unwrap();
         let object = value[0].as_object().unwrap();
         let keys: Vec<_> = object.keys().collect();
-        assert_eq!(keys, ["agent", "branch", "cwd", "id", "path", "title", "updated_at"]);
+        assert_eq!(keys, ["agent", "branch", "created_at", "cwd", "id", "path", "title", "updated_at"]);
         assert_eq!(object["branch"], Value::Null);
+        assert_eq!(object["created_at"], "2026-01-01T01:02:03Z");
         assert_eq!(object["updated_at"], "2026-01-02T03:04:05Z");
     }
 

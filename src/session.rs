@@ -25,6 +25,7 @@ pub struct Session {
     pub title: Option<String>,
     pub cwd: Option<String>,
     pub branch: Option<String>,
+    pub created_at: jiff::Timestamp,
     pub updated_at: jiff::Timestamp,
     pub path: Option<String>,
 }
@@ -61,6 +62,7 @@ mod tests {
             title: None,
             cwd: None,
             branch: None,
+            created_at: at.parse().unwrap(),
             updated_at: at.parse().unwrap(),
             path: None,
         }

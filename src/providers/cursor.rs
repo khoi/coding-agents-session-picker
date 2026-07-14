@@ -66,6 +66,10 @@ impl super::Provider for Cursor {
             .context("querying composerData")?
             .filter_map(Result::ok)
             .filter_map(|composer| {
+                let created_at = jiff::Timestamp::from_millisecond(
+                    composer.created_at.filter(|ms| *ms > 0)?,
+                )
+                .ok()?;
                 let transcript = transcripts.get(&composer.composer_id);
                 let cwd = transcript.map(|(encoded, _)| {
                     decoded
@@ -80,6 +84,7 @@ impl super::Provider for Cursor {
                     title: none_if_empty(composer.name),
                     cwd,
                     branch: None,
+                    created_at,
                     updated_at: jiff::Timestamp::from_millisecond(
                         composer.last_updated_at.or(composer.created_at).filter(|ms| *ms > 0)?,
                     )
@@ -207,6 +212,14 @@ mod tests {
             ("composerDataX:decoy", r#"{"composerId":"decoy","createdAt":1700000000000}"#),
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+            (
+                "composerData:missing-created",
+                r#"{"composerId":"missing-created","lastUpdatedAt":1700000000000}"#,
+            ),
+        )
+        .unwrap();
         conn.execute("INSERT INTO cursorDiskKV (key, value) VALUES ('composerData:tombstone', NULL)", [])
             .unwrap();
         conn.execute("INSERT INTO cursorDiskKV (key, value) VALUES ('unrelated:row', 'nope')", [])
@@ -218,5 +231,6 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "keep");
         assert_eq!(sessions[0].title.as_deref(), Some("kept session"));
+        assert_eq!(sessions[0].created_at.as_millisecond(), 1_700_000_000_000);
     }
 }

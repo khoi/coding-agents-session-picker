@@ -17,6 +17,7 @@ pub struct Pi {
 struct Header {
     id: String,
     cwd: String,
+    timestamp: jiff::Timestamp,
 }
 
 impl super::Provider for Pi {
@@ -49,6 +50,7 @@ fn read_session(path: &Path) -> Option<Session> {
         title,
         cwd: Some(header.cwd),
         branch: None,
+        created_at: header.timestamp,
         updated_at,
         path: Some(path.to_string_lossy().into_owned()),
     })
@@ -85,6 +87,7 @@ mod tests {
         assert_eq!(session.cwd.as_deref(), Some("/Users/x/proj"));
         assert_eq!(session.title.as_deref(), Some("fix the login bug"));
         assert_eq!(session.branch, None);
+        assert_eq!(session.created_at.to_string(), "2026-05-11T15:02:58.512Z");
     }
 
     #[test]
@@ -95,7 +98,7 @@ mod tests {
             dir.path(),
             "b.jsonl",
             &[
-                r#"{"type":"session","id":"019e-2","cwd":"/w"}"#,
+                r#"{"type":"session","id":"019e-2","timestamp":"2026-05-11T15:02:58.512Z","cwd":"/w"}"#,
                 &format!(r#"{{"type":"message","message":{{"role":"user","content":"{long}"}}}}"#),
             ],
         );
@@ -107,8 +110,19 @@ mod tests {
     #[test]
     fn header_only_session_has_null_title() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_session(dir.path(), "c.jsonl", &[r#"{"type":"session","id":"019e-3","cwd":"/w"}"#]);
+        let path = write_session(
+            dir.path(),
+            "c.jsonl",
+            &[r#"{"type":"session","id":"019e-3","timestamp":"2026-05-11T15:02:58.512Z","cwd":"/w"}"#],
+        );
         assert_eq!(read_session(&path).unwrap().title, None);
+    }
+
+    #[test]
+    fn missing_creation_time_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_session(dir.path(), "missing.jsonl", &[r#"{"type":"session","id":"019e-4","cwd":"/w"}"#]);
+        assert!(read_session(&path).is_none());
     }
 
     #[test]

@@ -66,7 +66,7 @@ fn query_threads(
     .with_context(|| format!("opening {}", db.display()))?;
     conn.busy_timeout(Duration::from_secs(1))?;
     let mut sql = String::from(
-        "SELECT id, rollout_path, cwd, title, first_user_message, preview, git_branch, updated_at, updated_at_ms FROM threads",
+        "SELECT id, rollout_path, cwd, title, first_user_message, preview, git_branch, created_at, updated_at, created_at_ms, updated_at_ms FROM threads",
     );
     if !include_archived {
         sql.push_str(" WHERE archived = 0");
@@ -86,18 +86,20 @@ fn query_threads(
                 none_if_empty(row.get(2)?),
                 title,
                 none_if_empty(row.get(6)?),
-                to_timestamp(row.get(8)?, row.get(7)?),
+                to_timestamp(row.get(9)?, row.get(7)?),
+                to_timestamp(row.get(10)?, row.get(8)?),
             ))
         })
         .context("querying threads")?
         .filter_map(Result::ok)
-        .filter_map(|(id, path, cwd, title, branch, updated_at)| {
+        .filter_map(|(id, path, cwd, title, branch, created_at, updated_at)| {
             Some(Session {
                 agent: Agent::Codex,
                 id,
                 title,
                 cwd,
                 branch,
+                created_at: created_at?,
                 updated_at: updated_at?,
                 path,
             })
@@ -170,6 +172,7 @@ impl Codex {
 fn read_rollout(path: &Path) -> Option<Session> {
     let updated_at = super::modified_at(path)?;
     let mut meta = None;
+    let mut created_at = None;
     let mut prompt = None;
     for (index, line) in BufReader::new(File::open(path).ok()?)
         .lines()
@@ -181,6 +184,10 @@ fn read_rollout(path: &Path) -> Option<Session> {
             continue;
         };
         if meta.is_none() && line["type"] == "session_meta" {
+            created_at = line["payload"]["timestamp"]
+                .as_str()
+                .or_else(|| line["timestamp"].as_str())
+                .and_then(|timestamp| timestamp.parse().ok());
             meta = Some(line["payload"].clone());
         } else if prompt.is_none() {
             prompt = line_user_prompt(&line);
@@ -200,6 +207,7 @@ fn read_rollout(path: &Path) -> Option<Session> {
         title: prompt,
         cwd: none_if_empty(payload["cwd"].as_str().map(str::to_owned)),
         branch: none_if_empty(payload["git"]["branch"].as_str().map(str::to_owned)),
+        created_at: created_at?,
         updated_at,
         path: Some(path.to_string_lossy().into_owned()),
     })
@@ -248,7 +256,7 @@ mod tests {
         fs::write(
             &path,
             concat!(
-                "{\"timestamp\":\"2026-07-01T10:00:00Z\",\"type\":\"session_meta\",",
+                "{\"timestamp\":\"2026-07-01T10:01:00Z\",\"type\":\"session_meta\",",
                 "\"payload\":{\"session_id\":\"legacy-id\",\"cwd\":\"/w\",\"timestamp\":\"2026-07-01T10:00:00Z\"}}\n",
             ),
         )
@@ -258,6 +266,7 @@ mod tests {
         assert_eq!(session.cwd.as_deref(), Some("/w"));
         assert_eq!(session.branch, None);
         assert_eq!(session.title, None);
+        assert_eq!(session.created_at.to_string(), "2026-07-01T10:00:00Z");
     }
 
     #[test]
@@ -267,7 +276,7 @@ mod tests {
         fs::write(
             &path,
             concat!(
-                "{\"timestamp\":\"t\",\"type\":\"session_meta\",\"payload\":{\"id\":\"cx-p\",\"cwd\":\"/w\"}}\n",
+                "{\"timestamp\":\"2026-07-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"cx-p\",\"cwd\":\"/w\"}}\n",
                 "{\"timestamp\":\"t\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"developer\",\"content\":[{\"type\":\"input_text\",\"text\":\"be careful\"}]}}\n",
                 "{\"timestamp\":\"t\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"# AGENTS.md instructions for /w\\nrules\"}]}}\n",
                 "{\"timestamp\":\"t\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>zsh</environment_context>\"}]}}\n",
@@ -316,5 +325,17 @@ mod tests {
         assert_eq!(sessions[0].id, "new-id");
         assert_eq!(sessions[0].branch.as_deref(), Some("main"));
         assert_eq!(sessions[0].title.as_deref(), Some("renamed"));
+    }
+
+    #[test]
+    fn rollout_without_creation_time_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        fs::write(
+            &path,
+            r#"{"type":"session_meta","payload":{"id":"missing","cwd":"/w"}}"#,
+        )
+        .unwrap();
+        assert!(read_rollout(&path).is_none());
     }
 }

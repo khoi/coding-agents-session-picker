@@ -14,7 +14,7 @@ cargo install coding-agents-session-picker
 ap
 ```
 
-Fuzzy-pick a session from the current directory and resume it in its agent. Type to filter · `ctrl-a`/`ctrl-e` start/end of line · `ctrl-b`/`ctrl-f` move cursor · `ctrl-w` delete word · `space` preview · `tab` all directories · `ctrl-t` cycle agent · `enter` resume · `esc` quit.
+Fuzzy-pick a session from the current directory and resume it in its agent. Type to filter · `tab`/`shift-tab` focus filter, agent, or sort · `left`/`right` change option · `up`/`down` move · `ctrl-t` preview · `ctrl-a`/`ctrl-e` start/end of line · `ctrl-b`/`ctrl-f` move cursor · `ctrl-w` delete word · `enter` resume · `esc` quit.
 
 ```sh
 ap pick                                # explicit form

@@ -82,12 +82,11 @@ fn main() -> ExitCode {
         }
     }
     session::sort_desc(&mut sessions);
-    if let Some(limit) = cli.limit {
-        sessions.truncate(limit);
-    }
-
     if let Some((all, print)) = picker_options(cli.command.as_ref(), bare) {
         return run_picker(&cli, &sessions, all, print, failed);
+    }
+    if let Some(limit) = cli.limit {
+        sessions.truncate(limit);
     }
     if let Some(base) = &cli.cwd {
         let base = std::fs::canonicalize(base).unwrap_or_else(|_| base.clone());
@@ -120,7 +119,7 @@ fn run_picker(cli: &Cli, sessions: &[Session], all: bool, print: Option<pick::Pr
         .or_else(|| std::env::current_dir().ok())
         .map(|dir| std::fs::canonicalize(&dir).unwrap_or(dir))
         .unwrap_or_default();
-    match pick::run(sessions, &scope, !all) {
+    match pick::run(sessions, &scope, !all, cli.limit) {
         Ok(Some(index)) => {
             let session = &sessions[index];
             match print {

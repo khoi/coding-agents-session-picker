@@ -177,6 +177,7 @@ mod tests {
             title: Some("t".to_owned()),
             cwd: None,
             branch: None,
+            created_at: "2026-06-01T00:00:00Z".parse().unwrap(),
             updated_at: "2026-07-01T00:00:00Z".parse().unwrap(),
             path: None,
         }
@@ -188,6 +189,19 @@ mod tests {
             Cache::default_path(),
             std::env::temp_dir().join("ap/sessions.json")
         );
+    }
+
+    #[test]
+    fn old_schema_cache_is_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("sessions.json");
+        fs::write(
+            &store,
+            r#"{"sessions":{"old":{"len":1,"modified_ms":1,"value":{"agent":"codex","id":"old","title":null,"cwd":null,"branch":null,"updated_at":"2026-07-01T00:00:00Z","path":null}}},"titles":{}}"#,
+        )
+        .unwrap();
+        let cache = Cache::load(Some(store));
+        assert!(cache.inner.lock().unwrap().store.sessions.is_empty());
     }
 
     #[test]

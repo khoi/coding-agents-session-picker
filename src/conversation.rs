@@ -355,6 +355,7 @@ mod tests {
             title: None,
             cwd: None,
             branch: None,
+            created_at: "2026-06-01T00:00:00Z".parse().unwrap(),
             updated_at: "2026-07-01T00:00:00Z".parse().unwrap(),
             path: Some(path.to_string_lossy().into_owned()),
         }

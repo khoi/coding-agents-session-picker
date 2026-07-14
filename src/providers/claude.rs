@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -50,9 +50,19 @@ fn read_session(path: &Path) -> Option<Session> {
         title: Some(title(&head, &tail)?),
         cwd: none_if_empty(extract_first(&head, "cwd")),
         branch: none_if_empty(extract_last(&tail, "gitBranch").or_else(|| extract_first(&head, "gitBranch"))),
+        created_at: created_at(path)?,
         updated_at: super::modified_at(path)?,
         path: Some(path.to_string_lossy().into_owned()),
     })
+}
+
+fn created_at(path: &Path) -> Option<jiff::Timestamp> {
+    BufReader::new(File::open(path).ok()?)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .filter(|entry| entry["type"] == "user" || entry["type"] == "system")
+        .find_map(|entry| entry["timestamp"].as_str()?.parse().ok())
 }
 
 fn head_tail(path: &Path, len: u64) -> std::io::Result<(String, String)> {
@@ -221,7 +231,7 @@ mod tests {
     fn survives_truncated_oversized_first_line() {
         let dir = tempfile::tempdir().unwrap();
         let huge = format!(
-            r#"{{"type":"user","cwd":"/big/project","gitBranch":"feat","message":{{"content":"{}"}}}}"#,
+            r#"{{"type":"user","cwd":"/big/project","gitBranch":"feat","timestamp":"2026-07-01T00:00:00Z","message":{{"content":"{}"}}}}"#,
             "x".repeat(2 * WINDOW as usize)
         );
         let lines = [huge, r#"{"type":"ai-title","aiTitle":"survivor"}"#.to_string()];
@@ -235,8 +245,39 @@ mod tests {
     #[test]
     fn empty_branch_normalizes_to_none() {
         let dir = tempfile::tempdir().unwrap();
-        let line = r#"{"type":"user","cwd":"/w","gitBranch":"","message":{"content":"hello"}}"#.to_owned();
+        let line = r#"{"type":"user","cwd":"/w","gitBranch":"","timestamp":"2026-07-01T00:00:00Z","message":{"content":"hello"}}"#.to_owned();
         let path = write_session(dir.path(), &[line]);
         assert_eq!(read_session(&path).unwrap().branch, None);
+    }
+
+    #[test]
+    fn missing_creation_time_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = r#"{"type":"user","cwd":"/w","message":{"content":"hello"}}"#.to_owned();
+        let path = write_session(dir.path(), &[line]);
+        assert!(read_session(&path).is_none());
+    }
+
+    #[test]
+    fn creation_time_scans_complete_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("{ID}.jsonl"));
+        let padding = format!(
+            r#"{{"type":"queue-operation","payload":"{}"}}"#,
+            "x".repeat(2 * WINDOW as usize)
+        );
+        fs::write(
+            &path,
+            [
+                padding,
+                user_line("after padding"),
+                r#"{"type":"ai-title","aiTitle":"found"}"#.to_owned(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let session = read_session(&path).unwrap();
+        assert_eq!(session.title.as_deref(), Some("found"));
+        assert_eq!(session.created_at.to_string(), "2026-07-01T00:00:00Z");
     }
 }

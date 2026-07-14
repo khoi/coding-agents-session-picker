@@ -33,13 +33,41 @@ pub enum Print {
 struct State {
     query: String,
     cursor: usize,
-    solo: Option<Agent>,
+    agent: Option<Agent>,
     scoped: bool,
+    control: ToolbarControl,
+    sort: Sort,
+    limit: Option<usize>,
     selected: usize,
     preview: Option<Result<Vec<Message>, String>>,
 }
 
-pub fn run(sessions: &[Session], scope: &Path, scoped: bool) -> anyhow::Result<Option<usize>> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolbarControl {
+    Filter,
+    Agent,
+    Sort,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sort {
+    Updated,
+    Created,
+}
+
+#[derive(Clone, Copy)]
+struct TableView {
+    compact: bool,
+    selected: usize,
+    sort: Sort,
+}
+
+pub fn run(
+    sessions: &[Session],
+    scope: &Path,
+    scoped: bool,
+    limit: Option<usize>,
+) -> anyhow::Result<Option<usize>> {
     let tty = OpenOptions::new()
         .read(true)
         .write(true)
@@ -48,7 +76,7 @@ pub fn run(sessions: &[Session], scope: &Path, scoped: bool) -> anyhow::Result<O
     enable_raw_mode()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(&tty))?;
     execute!(&tty, EnterAlternateScreen)?;
-    let picked = event_loop(&mut terminal, sessions, scope, scoped);
+    let picked = event_loop(&mut terminal, sessions, scope, scoped, limit);
     execute!(&tty, LeaveAlternateScreen)?;
     disable_raw_mode()?;
     picked
@@ -88,7 +116,9 @@ fn resume_command(session: &Session) -> Command {
         }
         Agent::Pi => {
             let mut command = Command::new("pi");
-            command.arg("--session").arg(session.path.as_deref().unwrap_or(&session.id));
+            command
+                .arg("--session")
+                .arg(session.path.as_deref().unwrap_or(&session.id));
             command
         }
     };
@@ -103,13 +133,17 @@ fn event_loop(
     sessions: &[Session],
     scope: &Path,
     scoped: bool,
+    limit: Option<usize>,
 ) -> anyhow::Result<Option<usize>> {
     let mut matcher = Matcher::new(Config::DEFAULT);
     let mut state = State {
         query: String::new(),
         cursor: 0,
-        solo: None,
+        agent: None,
         scoped,
+        control: ToolbarControl::Filter,
+        sort: Sort::Updated,
+        limit,
         selected: 0,
         preview: None,
     };
@@ -123,7 +157,7 @@ fn event_loop(
             }
             preview_dirty = false;
         }
-        terminal.draw(|frame| draw(frame, sessions, scope, &state, &rows))?;
+        terminal.draw(|frame| draw(frame, sessions, &state, &rows))?;
         let Event::Key(key) = read()? else { continue };
         if key.kind != KeyEventKind::Press {
             continue;
@@ -150,16 +184,9 @@ fn event_loop(
                     Some(load_preview(sessions, &rows, state.selected))
                 };
             }
-            Action::ToggleScope => {
-                state.scoped = !state.scoped;
-                preview_dirty = true;
-            }
-            Action::CycleAgent => {
-                state.solo = cycle(state.solo);
-                preview_dirty = true;
-            }
-            Action::SoloAgent(agent) => {
-                state.solo = (state.solo != Some(agent)).then_some(agent);
+            Action::FocusToolbar(delta) => state.focus_toolbar(delta),
+            Action::ChangeToolbar(delta) => {
+                state.change_toolbar(delta);
                 preview_dirty = true;
             }
             Action::Type(c) => {
@@ -207,9 +234,8 @@ enum Action {
     Accept,
     Move(isize),
     TogglePreview,
-    ToggleScope,
-    CycleAgent,
-    SoloAgent(Agent),
+    FocusToolbar(isize),
+    ChangeToolbar(isize),
     Type(char),
     Erase,
     EraseWord,
@@ -222,7 +248,6 @@ enum Action {
 
 fn action(key: KeyEvent) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
         KeyCode::Esc => Action::Quit,
         KeyCode::Char('c') if ctrl => Action::Quit,
@@ -233,23 +258,25 @@ fn action(key: KeyEvent) -> Action {
         KeyCode::Char('n') if ctrl => Action::Move(1),
         KeyCode::PageUp => Action::Move(-10),
         KeyCode::PageDown => Action::Move(10),
-        KeyCode::Char(' ') if !ctrl && !alt => Action::TogglePreview,
-        KeyCode::Tab => Action::ToggleScope,
-        KeyCode::Char('t') if ctrl => Action::CycleAgent,
-        KeyCode::Char(c @ '1'..='4') if alt => {
-            Action::SoloAgent(Agent::value_variants()[c as usize - '1' as usize])
-        }
+        KeyCode::Char('t') if ctrl => Action::TogglePreview,
+        KeyCode::Tab => Action::FocusToolbar(1),
+        KeyCode::BackTab => Action::FocusToolbar(-1),
         KeyCode::Backspace => Action::Erase,
         KeyCode::Home => Action::CursorHome,
         KeyCode::End => Action::CursorEnd,
-        KeyCode::Left => Action::CursorLeft,
-        KeyCode::Right => Action::CursorRight,
+        KeyCode::Left => Action::ChangeToolbar(-1),
+        KeyCode::Right => Action::ChangeToolbar(1),
         KeyCode::Char('a') if ctrl => Action::CursorHome,
         KeyCode::Char('e') if ctrl => Action::CursorEnd,
         KeyCode::Char('b') if ctrl => Action::CursorLeft,
         KeyCode::Char('f') if ctrl => Action::CursorRight,
         KeyCode::Char('w') if ctrl => Action::EraseWord,
-        KeyCode::Char(c) if !ctrl && !alt => Action::Type(c),
+        KeyCode::Char(c)
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            Action::Type(c)
+        }
         _ => Action::None,
     }
 }
@@ -284,30 +311,66 @@ fn load_preview(
     conversation::load(&sessions[index]).map_err(|err| format!("{err:#}"))
 }
 
-fn cycle(solo: Option<Agent>) -> Option<Agent> {
-    let variants = Agent::value_variants();
-    match solo {
-        None => Some(variants[0]),
-        Some(agent) => variants
-            .iter()
-            .position(|v| *v == agent)
-            .and_then(|i| variants.get(i + 1))
-            .copied(),
+impl State {
+    fn focus_toolbar(&mut self, delta: isize) {
+        self.control = cycle_value(
+            self.control,
+            &[
+                ToolbarControl::Filter,
+                ToolbarControl::Agent,
+                ToolbarControl::Sort,
+            ],
+            delta,
+        );
+    }
+
+    fn change_toolbar(&mut self, delta: isize) {
+        match self.control {
+            ToolbarControl::Filter => self.scoped = cycle_value(self.scoped, &[true, false], delta),
+            ToolbarControl::Agent => {
+                self.agent = cycle_value(
+                    self.agent,
+                    &[
+                        None,
+                        Some(Agent::ClaudeCode),
+                        Some(Agent::Codex),
+                        Some(Agent::Cursor),
+                        Some(Agent::Pi),
+                    ],
+                    delta,
+                )
+            }
+            ToolbarControl::Sort => {
+                self.sort = cycle_value(self.sort, &[Sort::Updated, Sort::Created], delta)
+            }
+        }
+        self.selected = 0;
     }
 }
 
+fn cycle_value<T: Copy + Eq>(current: T, values: &[T], delta: isize) -> T {
+    let index = values
+        .iter()
+        .position(|value| *value == current)
+        .unwrap_or_default();
+    values[(index as isize + delta).rem_euclid(values.len() as isize) as usize]
+}
+
 fn visible(sessions: &[Session], scope: &Path, state: &State, matcher: &mut Matcher) -> Vec<usize> {
-    let candidates = sessions.iter().enumerate().filter(|(_, session)| {
-        state.solo.is_none_or(|solo| session.agent == solo)
-            && (!state.scoped || in_scope(session, scope))
-    });
-    if state.query.is_empty() {
-        return candidates.map(|(index, _)| index).collect();
-    }
-    let pattern = Pattern::parse(&state.query, CaseMatching::Ignore, Normalization::Smart);
-    let mut buf = Vec::new();
-    let mut scored: Vec<(u32, usize)> = candidates
-        .filter_map(|(index, session)| {
+    let mut rows: Vec<usize> = sessions
+        .iter()
+        .enumerate()
+        .filter(|(_, session)| {
+            state.agent.is_none_or(|agent| session.agent == agent)
+                && (!state.scoped || in_scope(session, scope))
+        })
+        .map(|(index, _)| index)
+        .collect();
+    if !state.query.is_empty() {
+        let pattern = Pattern::parse(&state.query, CaseMatching::Ignore, Normalization::Smart);
+        let mut buf = Vec::new();
+        rows.retain(|&index| {
+            let session = &sessions[index];
             let haystack = format!(
                 "{} {} {} {}",
                 session.title.as_deref().unwrap_or_default(),
@@ -317,11 +380,24 @@ fn visible(sessions: &[Session], scope: &Path, state: &State, matcher: &mut Matc
             );
             pattern
                 .score(Utf32Str::new(&haystack, &mut buf), matcher)
-                .map(|score| (score, index))
-        })
-        .collect();
-    scored.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    scored.into_iter().map(|(_, index)| index).collect()
+                .is_some()
+        });
+    }
+    rows.sort_unstable_by(|&a, &b| {
+        sort_timestamp(&sessions[b], state.sort)
+            .cmp(&sort_timestamp(&sessions[a], state.sort))
+            .then_with(|| sessions[a].agent.cmp(&sessions[b].agent))
+            .then_with(|| sessions[a].id.cmp(&sessions[b].id))
+    });
+    rows.truncate(state.limit.unwrap_or(usize::MAX));
+    rows
+}
+
+fn sort_timestamp(session: &Session, sort: Sort) -> jiff::Timestamp {
+    match sort {
+        Sort::Updated => session.updated_at,
+        Sort::Created => session.created_at,
+    }
 }
 
 fn in_scope(session: &Session, scope: &Path) -> bool {
@@ -331,13 +407,7 @@ fn in_scope(session: &Session, scope: &Path) -> bool {
         .is_some_and(|cwd| Path::new(cwd).starts_with(scope))
 }
 
-fn draw(
-    frame: &mut ratatui::Frame,
-    sessions: &[Session],
-    scope: &Path,
-    state: &State,
-    rows: &[usize],
-) {
+fn draw(frame: &mut ratatui::Frame, sessions: &[Session], state: &State, rows: &[usize]) {
     let [input, status, list, detail, hints] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
@@ -350,27 +420,39 @@ fn draw(
     frame.render_widget(Line::from(format!("> {}", state.query)), input);
     frame.set_cursor_position((input.x + 2 + state.cursor as u16, input.y));
 
-    let scope_label = if state.scoped {
-        format!("cwd ({})", scope.display())
-    } else {
-        "all directories".to_owned()
-    };
-    let agent_label = state.solo.map_or("all".to_owned(), |solo| solo.to_string());
-    frame.render_widget(
-        Line::from(format!("scope: {scope_label} · agent: {agent_label}"))
-            .style(Style::new().add_modifier(Modifier::DIM)),
-        status,
-    );
+    frame.render_widget(toolbar(state, status.width), status);
 
     let now = jiff::Timestamp::now();
     if let Some(preview) = &state.preview {
         let [table, conversation] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(list);
-        draw_table(frame, sessions, rows, now, table, true, state.selected);
+        draw_table(
+            frame,
+            sessions,
+            rows,
+            now,
+            table,
+            TableView {
+                compact: true,
+                selected: state.selected,
+                sort: state.sort,
+            },
+        );
         draw_preview(frame, conversation, preview);
     } else {
-        draw_table(frame, sessions, rows, now, list, false, state.selected);
+        draw_table(
+            frame,
+            sessions,
+            rows,
+            now,
+            list,
+            TableView {
+                compact: false,
+                selected: state.selected,
+                sort: state.sort,
+            },
+        );
     }
 
     let selected_cwd = rows
@@ -383,7 +465,7 @@ fn draw(
     );
     frame.render_widget(
         Line::from(format!(
-            "{}/{} · ↑↓ move · space preview · enter resume · tab cwd/all · ctrl-a agent · alt-1..4 solo · esc quit",
+            "{}/{} · ↑↓ move · tab focus · ←→ change · ctrl-t preview · enter resume · esc quit",
             rows.len(),
             sessions.len(),
         ))
@@ -392,16 +474,95 @@ fn draw(
     );
 }
 
+fn toolbar(state: &State, width: u16) -> Line<'static> {
+    let full = toolbar_line(state, false, false);
+    if full.width() <= usize::from(width) {
+        return full;
+    }
+    let compact = toolbar_line(state, true, false);
+    if compact.width() <= usize::from(width) {
+        return compact;
+    }
+    toolbar_line(state, true, true)
+}
+
+fn toolbar_line(state: &State, compact: bool, narrow: bool) -> Line<'static> {
+    let mut spans = toolbar_control(
+        if narrow { "F" } else { "Filter" },
+        &[("Cwd", state.scoped), ("All", !state.scoped)],
+        state.control == ToolbarControl::Filter,
+        compact,
+    );
+    spans.push(if narrow { " " } else { "   " }.into());
+    spans.extend(toolbar_control(
+        if narrow { "A" } else { "Agent" },
+        &[
+            ("All", state.agent.is_none()),
+            ("Claude", state.agent == Some(Agent::ClaudeCode)),
+            ("Codex", state.agent == Some(Agent::Codex)),
+            ("Cursor", state.agent == Some(Agent::Cursor)),
+            ("Pi", state.agent == Some(Agent::Pi)),
+        ],
+        state.control == ToolbarControl::Agent,
+        compact,
+    ));
+    spans.push(if narrow { " " } else { "   " }.into());
+    spans.extend(toolbar_control(
+        if narrow { "S" } else { "Sort" },
+        &[
+            ("Updated", state.sort == Sort::Updated),
+            ("Created", state.sort == Sort::Created),
+        ],
+        state.control == ToolbarControl::Sort,
+        compact,
+    ));
+    spans.into()
+}
+
+fn toolbar_control(
+    label: &'static str,
+    values: &[(&'static str, bool)],
+    focused: bool,
+    compact: bool,
+) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        if compact {
+            format!("{label}:")
+        } else {
+            format!("{label}: ")
+        },
+        Style::new().add_modifier(Modifier::DIM),
+    )];
+    for &(value, active) in values {
+        if compact && !active {
+            continue;
+        }
+        let text = if active {
+            format!("[{value}]")
+        } else {
+            format!(" {value} ")
+        };
+        let style = if active && focused {
+            Style::new().add_modifier(Modifier::REVERSED)
+        } else if active {
+            Style::new()
+        } else {
+            Style::new().add_modifier(Modifier::DIM)
+        };
+        spans.push(Span::styled(text, style));
+    }
+    spans
+}
+
 fn draw_table(
     frame: &mut ratatui::Frame,
     sessions: &[Session],
     rows: &[usize],
     now: jiff::Timestamp,
     area: Rect,
-    compact: bool,
-    selected: usize,
+    view: TableView,
 ) {
-    let widths = if compact {
+    let widths = if view.compact {
         vec![
             Constraint::Length(7),
             Constraint::Length(6),
@@ -423,23 +584,32 @@ fn draw_table(
         ]
     };
     let table = Table::new(
-        rows.iter().map(|&index| {
+        rows.iter().enumerate().map(|(position, &index)| {
             let session = &sessions[index];
             let mut cells = vec![
-                relative(now, session.updated_at),
+                relative(now, sort_timestamp(session, view.sort)),
                 table_agent(session.agent),
                 session.title.clone().unwrap_or_default(),
             ];
-            if !compact {
+            if !view.compact {
                 cells.insert(2, session.branch.clone().unwrap_or_default());
             }
-            Row::new(cells)
+            let row = Row::new(cells);
+            if position % 2 == 0 {
+                row.style(Style::new().add_modifier(Modifier::DIM))
+            } else {
+                row
+            }
         }),
         widths,
     )
-    .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+    .row_highlight_style(
+        Style::new()
+            .remove_modifier(Modifier::DIM)
+            .add_modifier(Modifier::REVERSED),
+    )
     .highlight_symbol("▶ ");
-    let mut state = TableState::default().with_selected(Some(selected));
+    let mut state = TableState::default().with_selected(Some(view.selected));
     frame.render_stateful_widget(table, area, &mut state);
 }
 
@@ -507,29 +677,45 @@ mod tests {
             title: Some(title.to_owned()),
             cwd: Some(cwd.to_owned()),
             branch: None,
+            created_at: "2026-06-01T00:00:00Z".parse().unwrap(),
             updated_at: "2026-07-01T00:00:00Z".parse().unwrap(),
             path: None,
         }
     }
 
     fn fixtures() -> Vec<Session> {
-        vec![
+        let mut sessions = vec![
             session(Agent::Codex, "revamp sidebar", "/w/one"),
             session(Agent::ClaudeCode, "fix login", "/w/one/sub"),
             session(Agent::Pi, "sidebar colors", "/w/two"),
-        ]
+        ];
+        sessions[0].updated_at = "2026-07-03T00:00:00Z".parse().unwrap();
+        sessions[1].updated_at = "2026-07-02T00:00:00Z".parse().unwrap();
+        sessions[2].updated_at = "2026-07-01T00:00:00Z".parse().unwrap();
+        sessions[0].created_at = "2026-06-01T00:00:00Z".parse().unwrap();
+        sessions[1].created_at = "2026-06-03T00:00:00Z".parse().unwrap();
+        sessions[2].created_at = "2026-06-02T00:00:00Z".parse().unwrap();
+        sessions
     }
 
     fn indices(state: &State, scope: &str) -> Vec<usize> {
-        visible(&fixtures(), Path::new(scope), state, &mut Matcher::new(Config::DEFAULT))
+        visible(
+            &fixtures(),
+            Path::new(scope),
+            state,
+            &mut Matcher::new(Config::DEFAULT),
+        )
     }
 
     fn state() -> State {
         State {
             query: String::new(),
             cursor: 0,
-            solo: None,
+            agent: None,
             scoped: false,
+            control: ToolbarControl::Filter,
+            sort: Sort::Updated,
+            limit: None,
             selected: 0,
             preview: None,
         }
@@ -545,39 +731,63 @@ mod tests {
     }
 
     #[test]
-    fn solo_filters_one_agent() {
+    fn agent_filters_one_agent() {
         let mut s = state();
-        s.solo = Some(Agent::Pi);
+        s.agent = Some(Agent::Pi);
         assert_eq!(indices(&s, "/"), [2]);
     }
 
     #[test]
-    fn fuzzy_query_ranks_matches() {
+    fn scope_agent_and_query_filters_compose() {
+        let mut s = state();
+        s.scoped = true;
+        s.agent = Some(Agent::ClaudeCode);
+        s.query = "login".to_owned();
+        assert_eq!(indices(&s, "/w/one"), [1]);
+        s.agent = Some(Agent::Pi);
+        assert!(indices(&s, "/w/one").is_empty());
+    }
+
+    #[test]
+    fn fuzzy_query_filters_without_overriding_sort() {
         let mut s = state();
         s.query = "sidebar".to_owned();
         assert_eq!(indices(&s, "/"), [0, 2]);
+        s.sort = Sort::Created;
+        assert_eq!(indices(&s, "/"), [2, 0]);
         s.query = "nomatch".to_owned();
         assert!(indices(&s, "/").is_empty());
     }
 
     #[test]
-    fn cycle_walks_all_agents_then_clears() {
-        let mut solo = None;
-        let mut seen = Vec::new();
-        for _ in 0..5 {
-            solo = cycle(solo);
-            seen.push(solo);
-        }
-        assert_eq!(
-            seen,
-            [
-                Some(Agent::ClaudeCode),
-                Some(Agent::Codex),
-                Some(Agent::Cursor),
-                Some(Agent::Pi),
-                None,
-            ]
-        );
+    fn toolbar_focus_and_values_wrap() {
+        let mut s = state();
+        s.focus_toolbar(-1);
+        assert_eq!(s.control, ToolbarControl::Sort);
+        s.focus_toolbar(1);
+        s.focus_toolbar(1);
+        assert_eq!(s.control, ToolbarControl::Agent);
+        s.change_toolbar(-1);
+        assert_eq!(s.agent, Some(Agent::Pi));
+        s.change_toolbar(1);
+        assert_eq!(s.agent, None);
+        s.control = ToolbarControl::Filter;
+        s.change_toolbar(1);
+        assert!(s.scoped);
+        s.control = ToolbarControl::Sort;
+        s.selected = 2;
+        s.change_toolbar(1);
+        assert_eq!(s.sort, Sort::Created);
+        assert_eq!(s.selected, 0);
+    }
+
+    #[test]
+    fn limit_follows_selected_sort() {
+        let mut s = state();
+        s.limit = Some(1);
+        assert_eq!(indices(&s, "/"), [0]);
+        s.sort = Sort::Created;
+        assert_eq!(indices(&s, "/"), [1]);
     }
 
     #[test]
@@ -599,8 +809,11 @@ mod tests {
                     &[0],
                     "2026-07-12T00:00:00Z".parse().unwrap(),
                     frame.area(),
-                    false,
-                    0,
+                    TableView {
+                        compact: false,
+                        selected: 0,
+                        sort: Sort::Updated,
+                    },
                 )
             })
             .unwrap();
@@ -628,8 +841,11 @@ mod tests {
                     &[0],
                     "2026-07-12T00:00:00Z".parse().unwrap(),
                     frame.area(),
-                    false,
-                    0,
+                    TableView {
+                        compact: false,
+                        selected: 0,
+                        sort: Sort::Updated,
+                    },
                 )
             })
             .unwrap();
@@ -647,14 +863,106 @@ mod tests {
     }
 
     #[test]
-    fn space_toggles_preview_instead_of_filtering() {
+    fn toolbar_compacts_to_active_values() {
+        let s = state();
+        let full = toolbar(&s, 200).to_string();
+        assert!(full.contains("Filter:  Cwd [All]"));
+        assert!(full.contains("Agent: [All] Claude  Codex  Cursor  Pi "));
+        assert!(full.contains("Sort: [Updated] Created "));
+
+        let compact = toolbar(&s, 80).to_string();
+        assert_eq!(compact, "Filter:[All]   Agent:[All]   Sort:[Updated]");
+
+        let narrow = toolbar(&s, 40).to_string();
+        assert_eq!(narrow, "F:[All] A:[All] S:[Updated]");
+    }
+
+    #[test]
+    fn table_stripes_unselected_rows_and_undims_selection() {
+        let sessions = fixtures();
+        let mut terminal = Terminal::new(TestBackend::new(60, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_table(
+                    frame,
+                    &sessions,
+                    &[0, 1, 2],
+                    "2026-07-12T00:00:00Z".parse().unwrap(),
+                    frame.area(),
+                    TableView {
+                        compact: false,
+                        selected: 1,
+                        sort: Sort::Updated,
+                    },
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(buffer[(10, 0)].modifier.contains(Modifier::DIM));
+        assert!(buffer[(10, 1)].modifier.contains(Modifier::REVERSED));
+        assert!(!buffer[(10, 1)].modifier.contains(Modifier::DIM));
+        assert!(buffer[(10, 2)].modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn table_date_follows_sort() {
+        let sessions = fixtures();
+        let mut terminal = Terminal::new(TestBackend::new(60, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_table(
+                    frame,
+                    &sessions,
+                    &[0],
+                    "2026-07-12T00:00:00Z".parse().unwrap(),
+                    frame.area(),
+                    TableView {
+                        compact: false,
+                        selected: 0,
+                        sort: Sort::Created,
+                    },
+                )
+            })
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.starts_with("▶ 5w ago"));
+    }
+
+    #[test]
+    fn space_types_and_ctrl_t_toggles_preview() {
         assert_eq!(
             action(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
-            Action::TogglePreview
+            Action::Type(' ')
         );
         assert_eq!(
-            action(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
-            Action::Type('x')
+            action(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+            Action::TogglePreview
+        );
+    }
+
+    #[test]
+    fn tab_and_arrows_control_toolbar() {
+        assert_eq!(
+            action(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            Action::FocusToolbar(1)
+        );
+        assert_eq!(
+            action(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            Action::FocusToolbar(-1)
+        );
+        assert_eq!(
+            action(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
+            Action::ChangeToolbar(-1)
+        );
+        assert_eq!(
+            action(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
+            Action::ChangeToolbar(1)
         );
     }
 
@@ -675,10 +983,6 @@ mod tests {
         assert_eq!(
             action(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL)),
             Action::CursorRight
-        );
-        assert_eq!(
-            action(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
-            Action::CycleAgent
         );
     }
 
@@ -717,7 +1021,7 @@ mod tests {
         }]));
         let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
         terminal
-            .draw(|frame| draw(frame, &sessions, Path::new("/"), &state, &rows))
+            .draw(|frame| draw(frame, &sessions, &state, &rows))
             .unwrap();
         let rendered: String = terminal
             .backend()
@@ -741,7 +1045,7 @@ mod tests {
         ]));
         let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
         terminal
-            .draw(|frame| draw(frame, &sessions, Path::new("/"), &state, &rows))
+            .draw(|frame| draw(frame, &sessions, &state, &rows))
             .unwrap();
         let rendered: String = terminal
             .backend()
@@ -765,21 +1069,36 @@ mod tests {
         };
         assert_eq!(
             shape(Agent::ClaudeCode, "a"),
-            ("claude".into(), vec!["--resume".into(), "claude-code-a".into()])
+            (
+                "claude".into(),
+                vec!["--resume".into(), "claude-code-a".into()]
+            )
         );
-        assert_eq!(shape(Agent::Codex, "b"), ("codex".into(), vec!["resume".into(), "codex-b".into()]));
+        assert_eq!(
+            shape(Agent::Codex, "b"),
+            ("codex".into(), vec!["resume".into(), "codex-b".into()])
+        );
         assert_eq!(
             shape(Agent::Cursor, "c"),
-            ("cursor-agent".into(), vec!["--resume".into(), "cursor-c".into()])
+            (
+                "cursor-agent".into(),
+                vec!["--resume".into(), "cursor-c".into()]
+            )
         );
-        assert_eq!(shape(Agent::Pi, "d"), ("pi".into(), vec!["--session".into(), "pi-d".into()]));
+        assert_eq!(
+            shape(Agent::Pi, "d"),
+            ("pi".into(), vec!["--session".into(), "pi-d".into()])
+        );
     }
 
     #[test]
     fn resume_runs_in_session_cwd_when_it_exists() {
         let dir = tempfile::tempdir().unwrap();
         let mut with_dir = session(Agent::Codex, "x", dir.path().to_str().unwrap());
-        assert_eq!(resume_command(&with_dir).get_current_dir(), Some(dir.path()));
+        assert_eq!(
+            resume_command(&with_dir).get_current_dir(),
+            Some(dir.path())
+        );
         with_dir.cwd = Some("/does/not/exist".into());
         assert_eq!(resume_command(&with_dir).get_current_dir(), None);
     }
@@ -789,7 +1108,10 @@ mod tests {
         let mut pi = session(Agent::Pi, "x", "/w");
         pi.path = Some("/w/sessions/x.jsonl".into());
         let command = resume_command(&pi);
-        let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(args, ["--session", "/w/sessions/x.jsonl"]);
     }
 
