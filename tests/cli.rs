@@ -29,6 +29,21 @@ fn stderr_text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+#[test]
+fn version_uses_binary_name() {
+    let output = Command::cargo_bin("ap")
+        .unwrap()
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("ap {}\n", env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(stderr_text(&output), "");
+}
+
 fn write_at(path: &Path, content: &str, mtime_ms: i64) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, content).unwrap();

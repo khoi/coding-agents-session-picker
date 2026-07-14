@@ -5,7 +5,7 @@
 # Installation
 
 ```sh
-cargo install --git https://github.com/khoi/coding-agents-session-picker
+cargo install coding-agents-session-picker
 ```
 
 # Usage
@@ -27,4 +27,3 @@ cd (ap pick --print cwd)               # jump to a session's directory
 ap -f json | jq '.[0]'                 # all sessions as JSON, newest first
 ap -a codex -n 20 -f table             # 20 latest Codex threads as a table
 ```
-

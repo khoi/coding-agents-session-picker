@@ -18,6 +18,7 @@ use crate::session::{Agent, Session};
 
 #[derive(Parser)]
 #[command(
+    name = "ap",
     version,
     about = "List local AI coding agent sessions (Claude Code, Codex, Cursor, Pi)"
 )]

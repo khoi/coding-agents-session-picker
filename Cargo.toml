@@ -1,7 +1,18 @@
 [package]
-name = "ap"
+name = "coding-agents-session-picker"
 version = "0.1.0"
 edition = "2024"
+description = "Fast terminal picker for resuming coding-agent sessions"
+license = "MIT"
+repository = "https://github.com/khoi/coding-agents-session-picker"
+homepage = "https://github.com/khoi/coding-agents-session-picker"
+readme = "README.md"
+keywords = ["cli", "session", "picker"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "ap"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.103"
