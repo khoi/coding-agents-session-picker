@@ -17,7 +17,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::CrosstermBackend;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Terminal;
 use terminal_colorsaurus::{background_color, QueryOptions};
 
@@ -599,13 +599,17 @@ fn draw_table(
     let table = Table::new(
         rows.iter().enumerate().map(|(position, &index)| {
             let session = &sessions[index];
+            let metadata = Style::new().add_modifier(Modifier::DIM);
             let mut cells = vec![
-                relative(now, sort_timestamp(session, view.sort)),
-                table_agent(session.agent),
-                session.title.clone().unwrap_or_default(),
+                Cell::from(relative(now, sort_timestamp(session, view.sort))).style(metadata),
+                Cell::from(table_agent(session.agent)).style(metadata),
+                Cell::from(session.title.clone().unwrap_or_default()),
             ];
             if !view.compact {
-                cells.insert(2, session.branch.clone().unwrap_or_default());
+                cells.insert(
+                    2,
+                    Cell::from(session.branch.clone().unwrap_or_default()).style(metadata),
+                );
             }
             let row = Row::new(cells);
             match (
@@ -905,6 +909,38 @@ mod tests {
             rendered.find("revamp sidebar"),
             rendered.find("main").map(|index| index + 5)
         );
+    }
+
+    #[test]
+    fn table_dims_metadata_but_not_message() {
+        let mut sessions = fixtures();
+        sessions[0].branch = Some("feature".to_owned());
+        let mut terminal = Terminal::new(TestBackend::new(60, 2)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_table(
+                    frame,
+                    &sessions,
+                    &[0, 1],
+                    "2026-07-12T00:00:00Z".parse().unwrap(),
+                    frame.area(),
+                    TableView {
+                        compact: false,
+                        selected: 1,
+                        sort: Sort::Updated,
+                        background: None,
+                    },
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..60).map(|x| buffer[(x, 0)].symbol()).collect();
+        for text in ["1w ago", "codex", "feature"] {
+            let x = row.find(text).unwrap() as u16;
+            assert!(buffer[(x, 0)].modifier.contains(Modifier::DIM));
+        }
+        let message = row.find("revamp sidebar").unwrap() as u16;
+        assert!(!buffer[(message, 0)].modifier.contains(Modifier::DIM));
     }
 
     #[test]
