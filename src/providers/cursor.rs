@@ -214,7 +214,7 @@ mod tests {
         drop(conn);
 
         let cursor = Cursor { db, projects: dir.path().join("projects") };
-        let sessions = cursor.sessions().unwrap();
+        let sessions = cursor.sessions(&Cache::load(None)).unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "keep");
         assert_eq!(sessions[0].title.as_deref(), Some("kept session"));
