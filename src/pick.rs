@@ -403,13 +403,13 @@ fn draw_table(
 ) {
     let widths = if compact {
         vec![
-            Constraint::Length(11),
+            Constraint::Length(6),
             Constraint::Length(7),
             Constraint::Min(10),
         ]
     } else {
         vec![
-            Constraint::Length(11),
+            Constraint::Length(6),
             Constraint::Length(7),
             Constraint::Min(20),
             Constraint::Length(18),
@@ -419,7 +419,7 @@ fn draw_table(
         rows.iter().map(|&index| {
             let session = &sessions[index];
             let mut cells = vec![
-                session.agent.to_string(),
+                table_agent(session.agent),
                 relative(now, session.updated_at),
                 session.title.clone().unwrap_or_default(),
             ];
@@ -434,6 +434,13 @@ fn draw_table(
     .highlight_symbol("▶ ");
     let mut state = TableState::default().with_selected(Some(selected));
     frame.render_stateful_widget(table, area, &mut state);
+}
+
+fn table_agent(agent: Agent) -> String {
+    match agent {
+        Agent::ClaudeCode => "claude".to_owned(),
+        agent => agent.to_string(),
+    }
 }
 
 fn draw_preview(frame: &mut ratatui::Frame, area: Rect, preview: &Result<Vec<Message>, String>) {
@@ -564,6 +571,12 @@ mod tests {
                 None,
             ]
         );
+    }
+
+    #[test]
+    fn table_shortens_claude_code() {
+        assert_eq!(table_agent(Agent::ClaudeCode), "claude");
+        assert_eq!(table_agent(Agent::Codex), "codex");
     }
 
     #[test]
