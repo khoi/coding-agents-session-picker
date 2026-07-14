@@ -32,6 +32,7 @@ pub enum Print {
 
 struct State {
     query: String,
+    cursor: usize,
     solo: Option<Agent>,
     scoped: bool,
     selected: usize,
@@ -106,6 +107,7 @@ fn event_loop(
     let mut matcher = Matcher::new(Config::DEFAULT);
     let mut state = State {
         query: String::new(),
+        cursor: 0,
         solo: None,
         scoped,
         selected: 0,
@@ -161,14 +163,38 @@ fn event_loop(
                 preview_dirty = true;
             }
             Action::Type(c) => {
-                state.query.push(c);
+                let idx = byte_index(&state.query, state.cursor);
+                state.query.insert(idx, c);
+                state.cursor += 1;
                 state.selected = 0;
                 preview_dirty = true;
             }
             Action::Erase => {
-                state.query.pop();
-                state.selected = 0;
-                preview_dirty = true;
+                if state.cursor > 0 {
+                    let start = byte_index(&state.query, state.cursor - 1);
+                    let end = byte_index(&state.query, state.cursor);
+                    state.query.replace_range(start..end, "");
+                    state.cursor -= 1;
+                    state.selected = 0;
+                    preview_dirty = true;
+                }
+            }
+            Action::EraseWord => {
+                let start = word_start(&state.query, state.cursor);
+                if start < state.cursor {
+                    let from = byte_index(&state.query, start);
+                    let to = byte_index(&state.query, state.cursor);
+                    state.query.replace_range(from..to, "");
+                    state.cursor = start;
+                    state.selected = 0;
+                    preview_dirty = true;
+                }
+            }
+            Action::CursorHome => state.cursor = 0,
+            Action::CursorEnd => state.cursor = state.query.chars().count(),
+            Action::CursorLeft => state.cursor = state.cursor.saturating_sub(1),
+            Action::CursorRight => {
+                state.cursor = (state.cursor + 1).min(state.query.chars().count())
             }
             Action::None => {}
         }
@@ -186,6 +212,11 @@ enum Action {
     SoloAgent(Agent),
     Type(char),
     Erase,
+    EraseWord,
+    CursorHome,
+    CursorEnd,
+    CursorLeft,
+    CursorRight,
     None,
 }
 
@@ -204,14 +235,42 @@ fn action(key: KeyEvent) -> Action {
         KeyCode::PageDown => Action::Move(10),
         KeyCode::Char(' ') if !ctrl && !alt => Action::TogglePreview,
         KeyCode::Tab => Action::ToggleScope,
-        KeyCode::Char('a') if ctrl => Action::CycleAgent,
+        KeyCode::Char('t') if ctrl => Action::CycleAgent,
         KeyCode::Char(c @ '1'..='4') if alt => {
             Action::SoloAgent(Agent::value_variants()[c as usize - '1' as usize])
         }
         KeyCode::Backspace => Action::Erase,
+        KeyCode::Home => Action::CursorHome,
+        KeyCode::End => Action::CursorEnd,
+        KeyCode::Left => Action::CursorLeft,
+        KeyCode::Right => Action::CursorRight,
+        KeyCode::Char('a') if ctrl => Action::CursorHome,
+        KeyCode::Char('e') if ctrl => Action::CursorEnd,
+        KeyCode::Char('b') if ctrl => Action::CursorLeft,
+        KeyCode::Char('f') if ctrl => Action::CursorRight,
+        KeyCode::Char('w') if ctrl => Action::EraseWord,
         KeyCode::Char(c) if !ctrl && !alt => Action::Type(c),
         _ => Action::None,
     }
+}
+
+fn byte_index(s: &str, char_idx: usize) -> usize {
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(byte, _)| byte)
+        .unwrap_or(s.len())
+}
+
+fn word_start(s: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = cursor.min(chars.len());
+    while i > 0 && chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    while i > 0 && !chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    i
 }
 
 fn load_preview(
@@ -289,7 +348,7 @@ fn draw(
     .areas(frame.area());
 
     frame.render_widget(Line::from(format!("> {}", state.query)), input);
-    frame.set_cursor_position((input.x + 2 + state.query.chars().count() as u16, input.y));
+    frame.set_cursor_position((input.x + 2 + state.cursor as u16, input.y));
 
     let scope_label = if state.scoped {
         format!("cwd ({})", scope.display())
@@ -454,6 +513,7 @@ mod tests {
     fn state() -> State {
         State {
             query: String::new(),
+            cursor: 0,
             solo: None,
             scoped: false,
             selected: 0,
@@ -516,6 +576,54 @@ mod tests {
             action(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
             Action::Type('x')
         );
+    }
+
+    #[test]
+    fn emacs_keys_move_the_cursor() {
+        assert_eq!(
+            action(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            Action::CursorHome
+        );
+        assert_eq!(
+            action(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL)),
+            Action::CursorEnd
+        );
+        assert_eq!(
+            action(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL)),
+            Action::CursorLeft
+        );
+        assert_eq!(
+            action(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL)),
+            Action::CursorRight
+        );
+        assert_eq!(
+            action(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+            Action::CycleAgent
+        );
+    }
+
+    #[test]
+    fn ctrl_w_deletes_preceding_word() {
+        assert_eq!(
+            action(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)),
+            Action::EraseWord
+        );
+        assert_eq!(word_start("foo bar", 7), 4);
+        assert_eq!(word_start("foo bar  ", 9), 4);
+        assert_eq!(word_start("foo", 3), 0);
+        assert_eq!(word_start("", 0), 0);
+    }
+
+    #[test]
+    fn typing_inserts_at_cursor() {
+        let mut s = state();
+        s.query = "helloworld".to_owned();
+        s.cursor = 5;
+        let idx = byte_index(&s.query, s.cursor);
+        s.query.insert(idx, ' ');
+        s.cursor += 1;
+        assert_eq!(s.query, "hello world");
+        assert_eq!(s.cursor, 6);
     }
 
     #[test]
