@@ -49,11 +49,8 @@ impl Cache {
         }
     }
 
-    pub fn default_path() -> Option<PathBuf> {
-        std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::home_dir().map(|home| home.join(".cache")))
-            .map(|cache| cache.join("ap/sessions.json"))
+    pub fn default_path() -> PathBuf {
+        std::env::temp_dir().join("ap/sessions.json")
     }
 
     pub fn sessions(
@@ -183,6 +180,14 @@ mod tests {
             updated_at: "2026-07-01T00:00:00Z".parse().unwrap(),
             path: None,
         }
+    }
+
+    #[test]
+    fn default_path_uses_temporary_directory() {
+        assert_eq!(
+            Cache::default_path(),
+            std::env::temp_dir().join("ap/sessions.json")
+        );
     }
 
     #[test]
