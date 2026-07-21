@@ -1,4 +1,3 @@
-mod cache;
 mod conversation;
 mod output;
 mod pick;
@@ -63,12 +62,10 @@ fn main() -> ExitCode {
         .into_iter()
         .filter(|provider| cli.agent.is_empty() || cli.agent.contains(&provider.agent()))
         .collect();
-    let cache = cache::Cache::load(cli.root.is_none().then(cache::Cache::default_path));
     let results: Vec<_> = providers
         .par_iter()
-        .map(|provider| (provider.agent(), provider.sessions(&cache)))
+        .map(|provider| (provider.agent(), provider.sessions()))
         .collect();
-    cache.save();
 
     let mut failed = false;
     let mut sessions = Vec::new();

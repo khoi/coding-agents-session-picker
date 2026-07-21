@@ -9,7 +9,6 @@ use rayon::prelude::*;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-use crate::cache::Cache;
 use crate::conversation::{is_preamble, text_blocks};
 use crate::session::{Agent, Session, none_if_empty, truncate_chars};
 
@@ -25,16 +24,16 @@ impl super::Provider for Codex {
         Agent::Codex
     }
 
-    fn sessions(&self, cache: &Cache) -> anyhow::Result<Vec<Session>> {
+    fn sessions(&self) -> anyhow::Result<Vec<Session>> {
         let titles = index_titles(&self.home.join("session_index.jsonl"));
         let db = self.home.join("state_5.sqlite");
         if db.exists() {
-            match query_threads(&db, self.include_archived, &titles, cache) {
+            match query_threads(&db, self.include_archived, &titles) {
                 Ok(sessions) => return Ok(sessions),
                 Err(err) => eprintln!("{}: codex: {err:#}; falling back to rollout scan", env!("CARGO_BIN_NAME")),
             }
         }
-        self.scan_rollouts(&titles, cache)
+        self.scan_rollouts(&titles)
     }
 }
 
@@ -57,7 +56,6 @@ fn query_threads(
     db: &Path,
     include_archived: bool,
     titles: &HashMap<String, String>,
-    cache: &Cache,
 ) -> anyhow::Result<Vec<Session>> {
     let conn = Connection::open_with_flags(
         db,
@@ -112,7 +110,7 @@ fn query_threads(
             session.title = session
                 .path
                 .as_deref()
-                .and_then(|path| cache.title(Path::new(path), first_user_prompt));
+                .and_then(|path| first_user_prompt(Path::new(path)));
         });
     Ok(sessions)
 }
@@ -154,12 +152,12 @@ fn to_timestamp(ms: Option<i64>, seconds: Option<i64>) -> Option<jiff::Timestamp
 }
 
 impl Codex {
-    fn scan_rollouts(&self, titles: &HashMap<String, String>, cache: &Cache) -> anyhow::Result<Vec<Session>> {
+    fn scan_rollouts(&self, titles: &HashMap<String, String>) -> anyhow::Result<Vec<Session>> {
         let mut files = super::jsonl_files(&self.home.join("sessions"))?;
         if self.include_archived {
             files.extend(super::jsonl_files(&self.home.join("archived_sessions"))?);
         }
-        let mut sessions = cache.sessions(files, read_rollout);
+        let mut sessions = super::parse_sessions(files, read_rollout);
         for session in &mut sessions {
             if let Some(name) = titles.get(&session.id) {
                 session.title = Some(name.clone());
@@ -324,7 +322,7 @@ mod tests {
             include_archived: false,
         };
         let titles = HashMap::from([("new-id".to_owned(), "renamed".to_owned())]);
-        let sessions = codex.scan_rollouts(&titles, &Cache::load(None)).unwrap();
+        let sessions = codex.scan_rollouts(&titles).unwrap();
         assert_eq!(sessions[0].id, "new-id");
         assert_eq!(sessions[0].branch.as_deref(), Some("main"));
         assert_eq!(sessions[0].title.as_deref(), Some("renamed"));

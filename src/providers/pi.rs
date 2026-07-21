@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::cache::Cache;
 use crate::conversation::text_blocks;
 use crate::session::{Agent, Session, none_if_empty, truncate_chars};
 
@@ -25,8 +24,11 @@ impl super::Provider for Pi {
         Agent::Pi
     }
 
-    fn sessions(&self, cache: &Cache) -> anyhow::Result<Vec<Session>> {
-        Ok(cache.sessions(super::jsonl_files(&self.sessions)?, read_session))
+    fn sessions(&self) -> anyhow::Result<Vec<Session>> {
+        Ok(super::parse_sessions(
+            super::jsonl_files(&self.sessions)?,
+            read_session,
+        ))
     }
 }
 

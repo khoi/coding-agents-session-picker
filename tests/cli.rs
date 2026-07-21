@@ -30,6 +30,23 @@ fn stderr_text(output: &Output) -> String {
 }
 
 #[test]
+fn listing_does_not_write_temporary_files() {
+    let home = tempfile::tempdir().unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    claude_fixture(home.path());
+    let output = Command::cargo_bin("ap")
+        .unwrap()
+        .env("CLAUDE_CONFIG_DIR", home.path().join(".claude"))
+        .env("TMPDIR", temporary.path())
+        .args(["-a", "claude-code", "-f", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_json(&output).as_array().unwrap().len(), 2);
+    assert!(fs::read_dir(temporary.path()).unwrap().next().is_none());
+}
+
+#[test]
 fn version_uses_binary_name() {
     let output = Command::cargo_bin("ap")
         .unwrap()

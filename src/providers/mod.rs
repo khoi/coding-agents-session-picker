@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
-use crate::cache::Cache;
 use crate::session::{Agent, Session};
+use anyhow::Context;
+use rayon::prelude::*;
 
 mod claude;
 mod codex;
@@ -12,7 +12,7 @@ mod pi;
 
 pub trait Provider: Send + Sync {
     fn agent(&self) -> Agent;
-    fn sessions(&self, cache: &Cache) -> anyhow::Result<Vec<Session>>;
+    fn sessions(&self) -> anyhow::Result<Vec<Session>>;
 }
 
 pub fn all(root: Option<&Path>, include_archived: bool) -> Vec<Box<dyn Provider>> {
@@ -53,6 +53,16 @@ fn jsonl_files(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
         collect_jsonl(dir, &mut files)?;
     }
     Ok(files)
+}
+
+fn parse_sessions(
+    files: Vec<PathBuf>,
+    parse: impl Fn(&Path) -> Option<Session> + Sync,
+) -> Vec<Session> {
+    files
+        .into_par_iter()
+        .filter_map(|path| parse(&path))
+        .collect()
 }
 
 fn collect_jsonl(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {

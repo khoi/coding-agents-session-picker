@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::cache::Cache;
 use crate::conversation::{is_preamble, text_blocks};
 use crate::scrape::{extract_first, extract_last};
 use crate::session::{Agent, Session, none_if_empty, sort_desc, truncate_chars};
@@ -21,8 +20,8 @@ impl super::Provider for Claude {
         Agent::ClaudeCode
     }
 
-    fn sessions(&self, cache: &Cache) -> anyhow::Result<Vec<Session>> {
-        let mut sessions = cache.sessions(super::jsonl_files(&self.projects)?, read_session);
+    fn sessions(&self) -> anyhow::Result<Vec<Session>> {
+        let mut sessions = super::parse_sessions(super::jsonl_files(&self.projects)?, read_session);
         sort_desc(&mut sessions);
         let mut seen = HashSet::new();
         sessions.retain(|session| seen.insert(session.id.clone()));

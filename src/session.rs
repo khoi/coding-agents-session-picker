@@ -1,9 +1,9 @@
 use std::fmt;
 
 use clap::ValueEnum;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum Agent {
     ClaudeCode,
@@ -18,7 +18,7 @@ impl fmt::Display for Agent {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize)]
 pub struct Session {
     pub agent: Agent,
     pub id: String,
